@@ -12,9 +12,21 @@ try {
 
 let config = {};
 try {
-  config = require('../config.env');
+  const envPath = require('path').join(__dirname, '..', 'config.env');
+  const fs = require('fs');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      const k = trimmed.slice(0, eq).trim();
+      const v = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+      if (k) config[k] = v;
+    }
+  }
 } catch (_) {
-  // arquivo de configuração opcional
+  // optional
 }
 
 const webhookUrl = (config && config.discord_webhook_url) || process.env.discord_webhook_url || null;
