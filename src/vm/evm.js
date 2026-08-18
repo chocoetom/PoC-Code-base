@@ -1,12 +1,22 @@
 import axios from 'axios';
 import crypto from 'crypto';
-import { ecsign, privateToAddress, setLengthLeft } from '@ethereumjs/util';
+import { privateToAddress, setLengthLeft } from '@ethereumjs/util';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { encode as rlpEncode } from '@ethereumjs/rlp';
 import { AbiCoder, Interface } from 'ethers';
 import { keccak256 } from 'ethers';
 import { compileHTLC as compileHTLCImpl } from './contracts/index.js';
 
 const ABI = AbiCoder.defaultAbiCoder();
+
+function ecsign(msgHash, privateKey) {
+  const raw = secp256k1.sign(new Uint8Array(msgHash), new Uint8Array(privateKey), { format: 'recovered' });
+  return {
+    r: Buffer.from(raw.slice(1, 33)),
+    s: Buffer.from(raw.slice(33, 65)),
+    v: raw[0] + 27,
+  };
+}
 
 function hexBuf(hex) {
   let h = String(hex).replace(/^0x/i, '');

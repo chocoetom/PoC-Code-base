@@ -3,8 +3,7 @@ const { createVM } = require('@ethereumjs/vm');
 const { Common, Hardfork, Mainnet } = require('@ethereumjs/common');
 const { createLegacyTx } = require('@ethereumjs/tx');
 const { Block } = require('@ethereumjs/block');
-const { runTx } = require('@ethereumjs/vm');
-const { toBuffer, bytesToHex, hexToBytes, generateAddress, createZeroAddress, toChecksumAddress } = require('@ethereumjs/util');
+const { bytesToHex, hexToBytes, generateAddress, createZeroAddress, toChecksumAddress, Address, Account, setLengthLeft, bigIntToBytes, bytesToUnprefixedHex } = require('@ethereumjs/util');
 const BN = require('bn.js');
 
 function patchLevelWsDoubleClose() {
@@ -38,6 +37,8 @@ let db = null;
 
 const vmCache = new Map();
 const knownSlots = new Map();
+const storageLoadTimestamps = new Map();
+const STORAGE_LOAD_TTL_MS = 3000;
 
 function setDatabase(database) {
   db = database;
@@ -63,15 +64,15 @@ async function getVm(contractAddress) {
 
 async function restoreContractBalance(vm, evmAddr, contractAddress) {
   const row = db.prepare('SELECT balance FROM smart_contract_accounts WHERE lower(address) = lower(?)').get(contractAddress);
-  const account = await vm.stateManager.getAccount(evmAddr);
-  account.balance = toBuffer(BigInt(row ? row.balance : 0));
+  const account = (await vm.stateManager.getAccount(evmAddr)) || new Account();
+  account.balance = BigInt(row ? row.balance : 0);
   await vm.stateManager.putAccount(evmAddr, account);
 }
 
 async function flushContractBalance(vm, contractAddress) {
   if (!db) return;
   const evmAddr = toEvmAddress(contractAddress);
-  const account = await vm.stateManager.getAccount(evmAddr);
+  const account = (await vm.stateManager.getAccount(evmAddr)) || new Account();
   const balance = BigInt(account.balance);
   if (balance === 0n) {
     db.prepare('DELETE FROM smart_contract_accounts WHERE lower(address) = lower(?)').run(contractAddress);
@@ -82,30 +83,55 @@ async function flushContractBalance(vm, contractAddress) {
 
 async function loadContractStorage(vm, contractAddress) {
   if (!db) return;
+  const cacheKey = normalizeHex(contractAddress);
+  const now = Date.now();
+  const lastLoad = storageLoadTimestamps.get(cacheKey);
+  if (lastLoad && (now - lastLoad) < STORAGE_LOAD_TTL_MS) {
+    const evmAddr = toEvmAddress(contractAddress);
+    const hashedAddr = vm.stateManager.keccakFunction(evmAddr.bytes);
+    const addressHex = bytesToUnprefixedHex(hashedAddr);
+    if (vm.stateManager._storageTries && vm.stateManager._storageTries[addressHex]) {
+      delete vm.stateManager._storageTries[addressHex];
+    }
+    return;
+  }
+  storageLoadTimestamps.set(cacheKey, now);
   const rows = db.prepare(
     'SELECT slot, value FROM smart_contract_storage WHERE lower(contract_address) = lower(?)'
   ).all(contractAddress);
   const evmAddr = toEvmAddress(contractAddress);
-  const slots = knownSlots.get(normalizeHex(contractAddress)) || new Set();
+  if (!(await vm.stateManager.getAccount(evmAddr))) {
+    await vm.stateManager.putAccount(evmAddr, new Account());
+  }
+  const hashedAddr = vm.stateManager.keccakFunction(evmAddr.bytes);
+  const addressHex = bytesToUnprefixedHex(hashedAddr);
+  if (vm.stateManager._storageTries && vm.stateManager._storageTries[addressHex]) {
+    delete vm.stateManager._storageTries[addressHex];
+  }
+  const slots = knownSlots.get(cacheKey) || new Set();
   for (const row of rows) {
-    await vm.stateManager.putContractStorage(evmAddr, hexToBytes(row.slot), hexToBytes(row.value));
+    await vm.stateManager.putStorage(evmAddr, hexToBytes('0x' + normalizeHex(row.slot)), hexToBytes('0x' + normalizeHex(row.value)));
     slots.add(row.slot);
   }
-  knownSlots.set(normalizeHex(contractAddress), slots);
+  knownSlots.set(cacheKey, slots);
   await restoreContractBalance(vm, evmAddr, contractAddress);
 }
 
 async function saveContractStorage(vm, contractAddress, writtenSlots) {
   if (!db) return;
+  storageLoadTimestamps.delete(normalizeHex(contractAddress));
   const evmAddr = toEvmAddress(contractAddress);
   const del = db.prepare('DELETE FROM smart_contract_storage WHERE lower(contract_address) = lower(?) AND slot = ?');
   const upsert = db.prepare(`INSERT OR REPLACE INTO smart_contract_storage (contract_address, slot, value) VALUES (?, ?, ?)`);
   const slots = knownSlots.get(normalizeHex(contractAddress)) || new Set();
   for (const rawSlot of writtenSlots) {
-    const slotBuf = rawSlot instanceof Uint8Array ? rawSlot : hexToBytes(rawSlot);
+    const slotBuf = setLengthLeft(
+      rawSlot instanceof Uint8Array ? rawSlot : (typeof rawSlot === 'bigint' ? bigIntToBytes(rawSlot) : hexToBytes('0x' + rawSlot)),
+      32
+    );
     const slotHex = bytesToHex(slotBuf);
     slots.add(slotHex);
-    const value = await vm.stateManager.getContractStorage(evmAddr, slotBuf);
+    const value = await vm.stateManager.getStorage(evmAddr, slotBuf);
     const valueHex = value && value.length ? bytesToHex(value) : '';
     if (valueHex === '' || /^0*$/.test(valueHex)) {
       del.run(contractAddress, slotHex);
@@ -127,7 +153,7 @@ async function SaveSmartContractState(contractAddress) {
   const upsert = db.prepare(`INSERT OR REPLACE INTO smart_contract_storage (contract_address, slot, value) VALUES (?, ?, ?)`);
   let saved = 0;
   for (const slotHex of slots) {
-    const value = await vm.stateManager.getContractStorage(evmAddr, hexToBytes(slotHex));
+    const value = await vm.stateManager.getStorage(evmAddr, hexToBytes('0x' + slotHex));
     const valueHex = value && value.length ? bytesToHex(value) : '';
     if (valueHex === '' || /^0*$/.test(valueHex)) {
       del.run(contractAddress, slotHex);
@@ -146,10 +172,13 @@ async function loadContractCodes(vm) {
   if (!db) return;
   const rows = db.prepare('SELECT address, code FROM smart_contracts').all();
   for (const row of rows) {
-    const code = hexToBytes(row.code);
+    const code = hexToBytes('0x' + row.code);
     if (!code.length) continue;
     const evmAddr = toEvmAddress(row.address);
-    await vm.stateManager.putContractCode(evmAddr, code);
+    if (!(await vm.stateManager.getAccount(evmAddr))) {
+      await vm.stateManager.putAccount(evmAddr, new Account());
+    }
+    await vm.stateManager.putCode(evmAddr, code);
   }
 }
 
@@ -193,7 +222,7 @@ async function runWithStorage(vm, contractAddress, params) {
       value: BigInt(message.value || 0),
       delegatecall: !!message.delegatecall,
     });
-    frames.push(message.delegatecall ? message.caller : message.to);
+    frames.push(message.delegatecall ? message.caller : (message.to || evmThis));
   };
   const onAfterMessage = (result) => {
     const info = msgStack.pop();
@@ -204,23 +233,48 @@ async function runWithStorage(vm, contractAddress, params) {
       payouts.push({ to: fromEvmAddress(info.to), value: info.value.toString() });
     }
   };
-  vm.events.on('step', onStep);
-  vm.events.on('beforeMessage', onBeforeMessage);
-  vm.events.on('afterMessage', onAfterMessage);
+  const evmEvents = vm.evm ? vm.evm.events : null;
+  const events = evmEvents || vm.events;
+  events.on('step', onStep);
+  events.on('beforeMessage', onBeforeMessage);
+  events.on('afterMessage', onAfterMessage);
   try {
-    const result = await runTx(vm, params);
-    if (!result.execResult.exceptionError) {
-      for (const [owner, slots] of writtenBy.entries()) {
-        await saveContractStorage(vm, owner, slots);
+    const block = params.block instanceof Object && params.block.header ? params.block : undefined;
+    const result = await vm.evm.runCall({
+      caller: params.caller,
+      to: params.to,
+      data: params.data || params.code,
+      value: params.value || 0n,
+      gasLimit: params.gasLimit,
+      gasPrice: params.gasPrice,
+      block,
+      skipBalance: true,
+    });
+    const execResult = result && result.execResult ? result.execResult : result;
+    const normalized = {
+      execResult,
+      returnValue: execResult.returnValue,
+      gasUsed: execResult.executionGasUsed !== undefined ? execResult.executionGasUsed : execResult.gasUsed,
+      logs: execResult.logs || [],
+      _ccPayouts: payouts,
+      createdAddress: result && result.createdAddress,
+    };
+    if (!execResult.exceptionError) {
+      try {
+        for (const [owner, slots] of writtenBy.entries()) {
+          await saveContractStorage(vm, owner, slots);
+        }
+        await flushAllContractBalances(vm);
+      } catch (err) {
+        console.error('Failed to persist smart contract state', err);
+        throw err;
       }
-      await flushAllContractBalances(vm);
     }
-    result._ccPayouts = payouts;
-    return result;
+    return normalized;
   } finally {
-    vm.events.off('step', onStep);
-    vm.events.off('beforeMessage', onBeforeMessage);
-    vm.events.off('afterMessage', onAfterMessage);
+    events.off('step', onStep);
+    events.off('beforeMessage', onBeforeMessage);
+    events.off('afterMessage', onAfterMessage);
   }
 }
 
@@ -231,7 +285,7 @@ function normalizeHex(input) {
 }
 
 function toEvmAddress(systemAddress) {
-  return hexToBytes(normalizeHex(systemAddress).slice(2));
+  return new Address(hexToBytes('0x' + normalizeHex(systemAddress).slice(2)));
 }
 
 function nonceToBytes(nonce) {
@@ -239,11 +293,12 @@ function nonceToBytes(nonce) {
   if (n === 0n) return Uint8Array.from([]);
   let hex = n.toString(16);
   if (hex.length % 2) hex = '0' + hex;
-  return hexToBytes(hex);
+  return hexToBytes('0x' + hex);
 }
 
 function fromEvmAddress(evmBuf) {
-  return '0xcc' + bytesToHex(evmBuf);
+  const bytes = evmBuf instanceof Uint8Array ? evmBuf : evmBuf.bytes;
+  return '0xcc' + bytesToHex(bytes).slice(2);
 }
 
 function assertValidAddress(address, label) {
@@ -273,12 +328,22 @@ function deriveContractAddress(senderAddress, nonce) {
 
 function decodeRevertReason(returnValue) {
   try {
-    const buf = returnValue instanceof Uint8Array ? returnValue : hexToBytes(normalizeHex(returnValue || ''));
-    if (buf.length < 68 || bytesToHex(buf.slice(0, 4)) !== '08c379a0') return null;
-    const length = BigInt('0x' + bytesToHex(buf.slice(36, 68)));
-    const start = 68;
-    const end = Number(68 + length);
-    return new TextDecoder().decode(buf.slice(start, end));
+    const buf = returnValue instanceof Uint8Array ? returnValue : hexToBytes('0x' + normalizeHex(returnValue || ''));
+    if (buf.length < 4) return null;
+    const selector = bytesToHex(buf.slice(0, 4));
+    if (buf.length >= 68 && selector === '0x08c379a0') {
+      const length = Number(BigInt(bytesToHex(buf.slice(36, 68))));
+      const start = 68;
+      const end = start + length;
+      if (end > buf.length) return null;
+      return new TextDecoder().decode(buf.slice(start, end));
+    }
+    if (buf.length >= 36 && selector === '0x4e487b71') {
+      const code = Number(BigInt(bytesToHex(buf.slice(4, 36))));
+      const panicNames = { 0: 'GenericPanic', 1: 'Assert', 17: 'ArithmeticOverflow', 18: 'DivideByZero', 33: 'EnumConversion', 34: 'InvalidStorageAccess', 49: 'PopEmptyArray', 50: 'ArrayOutOfBounds', 65: 'MemoryAllocation', 81: 'InternalFunctionCall' };
+      return `Panic(${code}): ${panicNames[code] || 'Unknown'}`;
+    }
+    return null;
   } catch (e) {
     return null;
   }
@@ -286,9 +351,13 @@ function decodeRevertReason(returnValue) {
 
 function parseResult(result) {
   if (result.execResult.exceptionError) {
-    if (process.env.DBG_POOL) console.error("DBG exceptionError:", JSON.stringify(result.execResult.exceptionError), "returnValue:", result.returnValue ? bytesToHex(result.returnValue) : null);
+    const rv = result.returnValue ? bytesToHex(result.returnValue) : '0x';
+    if (process.env.DBG_POOL) console.error("DBG exceptionError:", JSON.stringify(result.execResult.exceptionError), "returnValue:", rv);
 
     const reason = decodeRevertReason(result.returnValue);
+    if (!reason && rv !== '0x') {
+      console.error(`[REVERT] raw returnValue=${rv} selector=${rv.slice(0, 10)}`);
+    }
     const err = new Error(
       reason
         ? `contract reverted: ${reason}`
@@ -299,7 +368,7 @@ function parseResult(result) {
     throw err;
   }
   return {
-    returnValue: '0x' + bytesToHex(result.returnValue),
+    returnValue: bytesToHex(result.returnValue),
     gasUsed: result.gasUsed.toString(),
     logs: result.logs || [],
     payouts: result._ccPayouts || [],
@@ -310,8 +379,8 @@ async function creditContractValue(vm, contractAddress, senderAddress, value) {
   const amount = BigInt(value || 0);
   if (amount === 0n) return;
   const evmAddr = toEvmAddress(contractAddress);
-  const account = await vm.stateManager.getAccount(evmAddr);
-  account.balance = toBuffer(account.balance + amount);
+  const account = (await vm.stateManager.getAccount(evmAddr)) || new Account();
+  account.balance += amount;
   await vm.stateManager.putAccount(evmAddr, account);
 }
 
@@ -345,13 +414,17 @@ async function CreateSmartContract(code, context, senderAddress, nonce, value = 
   const vm = await getVm(contractAddress);
   await creditContractValue(vm, contractAddress, senderAddress, value);
   await flushContractBalance(vm, contractAddress);
+  const senderEvm = toEvmAddress(senderAddress);
+  const senderAccount = (await vm.stateManager.getAccount(senderEvm)) || new Account();
+  senderAccount.nonce = BigInt(nonce);
+  await vm.stateManager.putAccount(senderEvm, senderAccount);
   const blockCtx = (context && typeof context === 'object' && 'block' in context) ? context.block : context;
   const result = await runWithStorage(vm, contractAddress, {
-    code: hexToBytes(normalizeHex(code)),
+    to: undefined,
+    data: hexToBytes('0x' + normalizeHex(code)),
     gasLimit: BigInt(gasLimit || initialSmartContractGasLimit),
     gasPrice: BigInt(gasPrice || initialSmartContractGasPrice),
-    address: toEvmAddress(contractAddress),
-    caller: toEvmAddress(senderAddress),
+    caller: senderEvm,
     value: BigInt(value || 0),
     ...(context && typeof context === 'object' && 'block' in context ? context : {}),
     block: blockCtx,
@@ -396,13 +469,12 @@ async function runSmartContract(contractAddress, senderAddress, data = '', value
 
   const vm = await getVm(contractAddress);
   const params = {
-    code: hexToBytes(contract.code),
+    to: toEvmAddress(contractAddress),
+    data: data ? hexToBytes('0x' + normalizeHex(data)) : new Uint8Array(0),
     gasLimit: BigInt(gasLimit || initialSmartContractGasLimit),
     gasPrice: BigInt(gasPrice || initialSmartContractGasPrice),
-    address: toEvmAddress(contractAddress),
     caller: toEvmAddress(senderAddress),
     value: BigInt(value || 0),
-    data: data ? hexToBytes(normalizeHex(data)) : new Uint8Array(0),
   };
   if (block) params.block = block;
   const result = await runWithStorage(vm, contractAddress, params);
@@ -426,7 +498,7 @@ async function getAccountBalance(address, inVmOfContract) {
   assertValidAddress(address, 'address');
   const vm = inVmOfContract ? await getVm(inVmOfContract) : await getVm(address);
   const evmAddr = toEvmAddress(address);
-  const account = await vm.stateManager.getAccount(evmAddr);
+  const account = (await vm.stateManager.getAccount(evmAddr)) || new Account();
   return account.balance;
 }
 

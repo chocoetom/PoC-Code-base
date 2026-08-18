@@ -1,5 +1,5 @@
 import { BN } from 'bn.js';
-import { Block } from '@ethereumjs/block';
+import { createBlock } from '@ethereumjs/block';
 import crypto from 'crypto';
 import { AbiCoder, Interface, id } from 'ethers';
 import { hashTransaction, ZERO_HASH, calculateMiningReward, computeStateRoot, computeContractStateRoot } from '../crypto.js';
@@ -53,9 +53,7 @@ function bn(b) {
 }
 
 function blockAt(timestamp) {
-  const b = new Block();
-  b.header.timestamp = Buffer.from(new BN(timestamp).toString(16, 16).padStart(16, '0'), 'hex');
-  return b;
+  return createBlock({ header: { timestamp: BigInt(timestamp) } });
 }
 
 function makeBlock(chain, blk, miner) {
