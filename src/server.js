@@ -785,22 +785,36 @@ const validation = await this.chain.validateTxForMempool(tx);
     app.get('/health/liveness', (req, res) => res.json({ ok: true }));
     app.get('/health/readiness', (req, res) => res.json({ ok: true }));
 
-    let port = this.cfg.port;
-    this.server = require('http').createServer(app);
-    this.server.listen(port, '0.0.0.0', () => {
-      log('info', `HTTP server listening on port ${port}`);
-    });
-    this.server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        port++;
+    const http = require('http');
+    const initialPort = this.cfg.port;
+    const maxRetries = 10;
+    let attempt = 0;
+
+    const bind = (port) => {
+      this.server = http.createServer(app);
+      this.server.listen(port, '0.0.0.0', () => {
         this.cfg.port = port;
-        this.server.listen(port);
-        log('info', `Port busy, using ${port}`);
-      } else {
-        log('error', `Server error: ${err.message}`);
-        process.exit(1);
-      }
-    });
+        log('info', `HTTP server listening on port ${port}`);
+      });
+      this.server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          if (attempt >= maxRetries) {
+            log('error', `Unable to bind to a port after ${maxRetries} retries starting from ${initialPort}`);
+            process.exit(1);
+            return;
+          }
+          attempt++;
+          const nextPort = port + 1;
+          log('info', `Port ${port} busy, retrying on ${nextPort}`);
+          this.server.close(() => bind(nextPort));
+        } else {
+          log('error', `Server error: ${err.message}`);
+          process.exit(1);
+        }
+      });
+    };
+
+    bind(initialPort);
     this._startTime = Date.now();
     this._fetchPeerStorage();
     setInterval(() => this._fetchPeerStorage(), 30000);
