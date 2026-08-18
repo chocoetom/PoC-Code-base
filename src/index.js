@@ -5,34 +5,46 @@ const { ChocoNode } = require('./node');
 const args = process.argv.slice(2);
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`
-  ChocoNode — PoC Testnet Node
+  const BOLD = '\x1b[1m';
+  const CYAN = '\x1b[36m';
+  const GREEN = '\x1b[32m';
+  const DIM = '\x1b[2m';
+  const RESET = '\x1b[0m';
 
-  USAGE:
+  console.log(`
+${CYAN}      _                     _           _      
+  ___| |__   ___   ___ ___ | |__  _   _| |__   
+ / __| '_ \\ / _ \\ / __/ _ \\| '_ \\| | | | '_ \\  
+| (__| | | | (_) | (_| (_) | | | | |_| | |_) | 
+ \\___|_| |_|\\___/ \\___\\___/|_| |_|\\__,_|_.__/  
+                                               
+ _          _                  _               
+| |__   ___| |_ __    ___  ___| |_ _   _ _ __  
+| '_ \\ / _ \\ | '_ \\  / __|/ _ \\ __| | | | '_ \\ 
+| | | |  __/ | |_) | \\__ \\  __/ |_| |_| | |_) |
+|_| |_|\\___|_| .__/  |___/\\___|\\__|\\__,_| .__/ 
+             |_|                        |_|    ${RESET}
+
+  ${BOLD}ChocoNode — PoC Testnet Node${RESET}
+
+  ${GREEN}USAGE${RESET}
     node src/index.js              Start the node
     node src/index.js --help       Show this help
 
-  ENVIRONMENT VARIABLES:
-    PORT=3001                      HTTP port
-    MINING_ENABLED=true            Enable mining
-    MINER_ADDRESS=0x...            Miner wallet address
-    MINER_PRIVATE_KEY=hex          Private key for block signing
-    LOG_LEVEL=info                 Log level (trace/debug/info/warn/error)
-    DISCOVERY_PORT=7777            WebSocket discovery port
-    DISCOVERY_URL=ws://...         Connect to remote discovery server
-    NODE_URL=http://...            Public node URL
-    SEED_PEERS=url1,url2           Comma-separated seed peers
-    DB_PATH=./db/choco-node.db     Database path
-    DATA_DIR=./node-data           Data directory
-    PLOTS_DIR=./plots              Plot directory
-    PLOT_SIZE=0.01                Plot size in GB (overrides committed size_gb)
-    ADMIN_TOKEN=...                Admin API token
+  ${GREEN}ENVIRONMENT VARIABLES${RESET}
+    ${DIM}PORT${RESET}              3001                      HTTP port
+    ${DIM}MINING_ENABLED${RESET}    true                      Enable mining
+    ${DIM}MINER_ADDRESS${RESET}     0x...                     Miner wallet address
+    ${DIM}LOG_LEVEL${RESET}         info                      Log level (trace/debug/info/warn/error)
+    ${DIM}DATA_DIR${RESET}          ./node-data               Data directory
+    ${DIM}PLOTS_DIR${RESET}         ./plots                   Plot directory
+    ${DIM}ADMIN_TOKEN${RESET}       ...                       Admin API token
 
-  CONFIG FILES:
-    config.env                     KEY=VALUE overrides (loaded automatically)
-    node_config.json               Auto-generated, overrides defaults
+  ${GREEN}CONFIG FILES${RESET}
+    config.env                    KEY=VALUE overrides
+    node_config.json              Auto-generated, overrides defaults
 
-  EXAMPLES:
+  ${GREEN}EXAMPLES${RESET}
     node src/index.js
     PORT=3002 node src/index.js
     MINING_ENABLED=true MINER_ADDRESS=0x... node src/index.js

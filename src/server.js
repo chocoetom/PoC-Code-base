@@ -139,6 +139,40 @@ class Server {
       });
     });
 
+app.get('/api/state', (req, res) => {
+  const running = !!this.chain;
+  const config = this.cfg;
+  const wallets = this.db.prepare('SELECT address, balance, nonce FROM users ORDER BY address').all();
+  const node = running ? this.chain.getStats() : null;
+  res.json({
+    running,
+    config: {
+      port: config.port,
+      minerAddress: config.minerAddress,
+      miningEnabled: config.miningEnabled,
+      chainId: config.chainId,
+      chainName: config.chainName,
+      symbol: config.symbol
+    },
+    wallets: wallets.map(w => ({
+      address: w.address,
+      balance: w.balance,
+      nonce: w.nonce
+    })),
+    miner_unlocked: !!config.minerPrivateKey,
+    node: node ? {
+      height: node.height,
+      hash: node.hash,
+      peers: node.blocks ? node.blocks.length : 0
+    } : null,
+    network_storage: {
+      local: { plots_count: node ? node.plots_count : 0, capacidade_gb: node ? Number(node.capacidade_gb || 0) : 0 },
+      peers: []
+    },
+    data_dir: config.dataDir
+  });
+});
+
     app.get('/api/blocks', (req, res) => {
       const from = parseInt(req.query.from) || 0;
       const limit = Math.min(parseInt(req.query.limit) || 50, 200);
@@ -440,6 +474,22 @@ class Server {
         log('error', `[SMART CONTRACTS] Failed to call contract: address=${address}, sender=${sender}, error=${e.message}`);
         res.status(400).json({ error: e.code || 'CALL_FAILED', message: e.message });
       }
+    });
+
+    app.post('/api/contracts/call-batch', async (req, res) => {
+      if (!contractsEnabled()) return contractsDisabled(res);
+      const { address, sender, calls } = req.body || {};
+      if (!address || !sender || !Array.isArray(calls)) return res.status(400).json({ error: 'address, sender, and calls[] required' });
+      const results = [];
+      for (const call of calls) {
+        try {
+          const result = await this.smartContracts.runSmartContract(address, sender, call.data || '0x', Number(call.value) || 0);
+          results.push({ ok: true, returnValue: result.returnValue, gasUsed: result.gasUsed });
+        } catch (e) {
+          results.push({ ok: false, error: e.message });
+        }
+      }
+      res.json({ ok: true, results });
     });
 
     app.post('/api/contracts/execute', async (req, res) => {

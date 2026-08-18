@@ -46,7 +46,7 @@ function loadConfig() {
     decimals: 18,
     maxPeers: 50,
     peerTimeoutMs: 30000,
-    maxBlocksPerSync: 200,
+    maxBlocksPerSync: 1000,
     peerFailThreshold: 25,
     peerBanThreshold: 50,
     version: '3.6.0-js',
