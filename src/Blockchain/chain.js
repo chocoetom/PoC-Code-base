@@ -3,7 +3,7 @@ import { IncrementalStateRoot } from './state-trie.js';
 import { hashBlockAsync, verifySignatureAsync, canonicalTxMessageAsync } from '../worker-pool.js';
 import { estimateIntrinsicGas, nextBaseFee, GAS_PARAMS } from '../consensus/gas.js';
 import { log } from '../config.js';
-import { Block } from '@ethereumjs/block';
+import { createBlock } from '@ethereumjs/block';
 import BN from 'bn.js';
 
 const FINALIZATION_DEPTH = 30;
@@ -495,12 +495,12 @@ class Chain {
 
   _blockContext(bloco) {
     try {
-      const b = new Block();
-      const ts = new BN(safeInt(bloco.timestamp, 0)).toString(16, 16).padStart(16, '0');
-      b.header.timestamp = Buffer.from(ts, 'hex');
-      const num = new BN(safeInt(bloco.height, 0)).toString(16, 16).padStart(16, '0');
-      b.header.number = Buffer.from(num, 'hex');
-      return b;
+      return createBlock({
+        header: {
+          timestamp: BigInt(safeInt(bloco.timestamp, 0)),
+          number: BigInt(safeInt(bloco.height, 0)),
+        },
+      });
     } catch (e) { return undefined; }
   }
 
@@ -684,10 +684,12 @@ class Chain {
               await this.contracts.creditContractBalance(to, safeBigInt(tx.value, 0n).toString());
             }
             tx._ccApplied = true;
+            log('info', `[SMART CONTRACTS] Block contract call OK: to=${to} from=${tx.from_addr} gasUsed=${res ? res.gasUsed : '?'} data=${(tx.data || '0x').slice(0, 10)}`);
             if (res && Array.isArray(res.payouts)) payouts.push(...res.payouts);
           } catch (e) {
             tx._ccError = e.message || String(e);
             tx._ccApplied = false;
+            log('error', `[SMART CONTRACTS] Block contract call REVERTED: to=${to} from=${tx.from_addr} data=${(tx.data || '0x').slice(0, 42)} reason=${e.reason || 'none'} error=${e.message}`);
           }
         }
       }
