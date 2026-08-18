@@ -10,13 +10,14 @@ const { loadConfig, saveConfig, normalizeUrl } = CHOCOHUB;
 
 const VERSION = '3.6.0';
 
+const useColor = !!(process.stdout.isTTY && !process.env.NO_COLOR && (process.env.FORCE_COLOR !== '0'));
 const C = {
-  grn: s => `\x1b[32m${s}\x1b[0m`,
-  red: s => `\x1b[31m${s}\x1b[0m`,
-  ylw: s => `\x1b[33m${s}\x1b[0m`,
-  cyn: s => `\x1b[36m${s}\x1b[0m`,
-  dim: s => `\x1b[2m${s}\x1b[0m`,
-  bold: s => `\x1b[1m${s}\x1b[0m`,
+  grn: s => useColor ? `\x1b[32m${s}\x1b[0m` : s,
+  red: s => useColor ? `\x1b[31m${s}\x1b[0m` : s,
+  ylw: s => useColor ? `\x1b[33m${s}\x1b[0m` : s,
+  cyn: s => useColor ? `\x1b[36m${s}\x1b[0m` : s,
+  dim: s => useColor ? `\x1b[2m${s}\x1b[0m` : s,
+  bold: s => useColor ? `\x1b[1m${s}\x1b[0m` : s,
 };
 
 const GROUPS = {
@@ -122,14 +123,30 @@ const COMMANDS = [
 ];
 
 function printUsage() {
-  console.log(C.bold(`\n  ChocoHub CLI v${VERSION}`));
-  console.log(C.dim(`  Usage: choco <command> [options]\n`));
+  const banner = `
+${C.cyn(`      _                     _           _      
+  ___| |__   ___   ___ ___ | |__  _   _| |__   
+ / __| '_ \ / _ \ / __/ _ \| '_ \| | | | '_ \  
+| (__| | | | (_) | (_| (_) | | | | |_| | |_) | 
+ \___|_| |_|\___/ \___\___/|_| |_|\__,_|_.__/  
+                                               
+ _          _                  _               
+| |__   ___| |_ __    ___  ___| |_ _   _ _ __  
+| '_ \ / _ \ | '_ \  / __|/ _ \ __| | | | '_ \ 
+| | | |  __/ | |_) | \__ \  __/ |_| |_| | |_) |
+|_| |_|\___|_| .__/  |___/\___|\__|\__,_| .__/ 
+             |_|                        |_|    `)}
+
+  ${C.bold('ChocoHub CLI v' + VERSION)}
+  ${C.dim('Usage: choco <command> [options]')}
+`;
+  console.log(banner);
 
   let prevGroup = null;
   for (const entry of COMMANDS) {
     if (entry.group !== prevGroup) {
       const g = GROUPS[entry.group];
-      console.log(`  ${C.ylw(g.label)} — ${C.dim(g.desc)}`);
+      console.log(`  ${C.ylw(C.bold(g.label))} - ${C.dim(g.desc)}`);
       prevGroup = entry.group;
     }
     const cmd = C.grn(entry.cmd.padEnd(22));
@@ -139,10 +156,13 @@ function printUsage() {
     }
   }
 
-  console.log(C.bold(`\n  GLOBAL OPTIONS:\n`));
+  console.log(``);
+  console.log(`  ${C.bold('GLOBAL OPTIONS')}`);
   console.log(`    ${C.dim('--rpc <url>'.padEnd(24))} RPC endpoint (default: http://localhost:3001)`);
-  console.log(`    ${C.dim('--help, -h'.padEnd(24))} Show this help\n`);
+  console.log(`    ${C.dim('--help, -h'.padEnd(24))} Show this help`);
+  console.log(``);
 }
+
 
 function parseArgs(argv) {
   const args = {};

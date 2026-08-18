@@ -5,15 +5,15 @@
 const { ChocoNode, NodeRegistry } = require('./src/node');
 const { loadConfig, saveConfig, normalizeUrl, normalizeSeedPeers, log, setLogLevel, getLogBuffer, BASE_DIR, CONFIG_PATH } = require('./src/config');
 const crypto_utils = require('./src/crypto');
-const db = require('./src/db');
-const chain = require('./src/chain');
+const db = require('./src/Blockchain/db');
+const chain = require('./src/Blockchain/chain');
 const { Chain } = chain;
-const challenge = require('./src/challenge');
-const { PeerManager } = require('./src/peers');
-const sync = require('./src/sync');
+const challenge = require('./src/Blockchain/challenge');
+const { PeerManager } = require('./src/P2P/peers');
+const sync = require('./src/P2P/sync');
 const { Miner } = require('./src/miner');
 const plot = require('./src/plot');
-const { DiscoveryServer, connectDiscoveryServer } = require('./src/discovery');
+const { DiscoveryServer, connectDiscoveryServer } = require('./src/P2P/discovery');
 const { Server } = require('./src/server');
 
 // Re-export everything from crypto
