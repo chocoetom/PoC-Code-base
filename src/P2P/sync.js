@@ -87,7 +87,7 @@ class SyncEngine {
           const remoteWork = safeBigInt(remote.chain_work, 0n);
           const localTip = this.chain.getBlock(this.chain.height);
           const localWork = safeBigInt(localTip ? localTip.chain_work : 0n, 0n);
-          if (remoteWork <= localWork) continue;
+          if (remoteWork <= localWork && remoteHeight <= this.chain.height) continue;
           log('debug', `loopSync: peer=${peer.url} remoteHeight=${remoteHeight} remoteWork=${remote.chain_work} localHeight=${this.chain.height} localWork=${localTip ? localTip.chain_work : 0}`);
           await this._syncFromPeer(peer.url, remoteHeight);
           break;
@@ -191,10 +191,9 @@ class SyncEngine {
           }, timeout: 5,
         });
         if (res) {
-          this.peers.seen(peer.url, safeInt(res.our_height, 0), res.node_id);
           if (Array.isArray(res.peers)) {
             for (const p of res.peers) if (p.url) this.peers.add(p.url);
-            log('info', `[P2P] Heartbeat: ${peer.url} reported ${res.peers.length} peers, our_height=${res.our_height}, node_id=${res.node_id}`)
+            log('info', `[P2P] Heartbeat: ${peer.url} reported ${res.peers.length} peers, seed_height=${res.our_height}, node_id=${res.node_id}`)
           }
         }
       } catch { this.peers.fail(peer.url); }

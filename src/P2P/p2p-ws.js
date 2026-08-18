@@ -10,6 +10,8 @@ class P2PWebSocketServer {
     this.wss = null;
     this.clients = new Map();
     this._messageHandlers = new Map();
+    this._blockRateLimiter = new Map();
+    this._txRateLimiter = new Map();
     this._setupHandlers();
   }
 
@@ -59,11 +61,21 @@ class P2PWebSocketServer {
 
   _handleNewBlock(ws, msg) {
     if (!msg.block) return;
+    const ip = ws.peerIp || 'unknown';
+    const now = Date.now();
+    const lastSeen = this._blockRateLimiter.get(ip) || 0;
+    if (now - lastSeen < 500) return;
+    this._blockRateLimiter.set(ip, now);
     this.broadcast('new_block', { block: msg.block }, ws);
   }
 
   _handleNewTx(ws, msg) {
     if (!msg.tx) return;
+    const ip = ws.peerIp || 'unknown';
+    const now = Date.now();
+    const lastSeen = this._txRateLimiter.get(ip) || 0;
+    if (now - lastSeen < 500) return;
+    this._txRateLimiter.set(ip, now);
     this.broadcast('new_tx', { tx: msg.tx }, ws);
   }
 
@@ -90,6 +102,7 @@ class P2PWebSocketServer {
 
       this.wss.on('connection', (ws, req) => {
         const ip = req.socket.remoteAddress;
+        ws.peerIp = req.socket.remoteAddress;
         ws.isAlive = true;
         ws.subscriptions = new Set(['blocks', 'transactions']);
         this.clients.set(ws, { ip, connectedAt: Date.now() });
@@ -236,6 +249,7 @@ class P2PWebSocketClient {
     this.reconnectTimer = null;
     this.connected = false;
     this._messageQueue = [];
+    this._seenBlockHashes = new Set();
   }
 
   connect() {
@@ -245,6 +259,7 @@ class P2PWebSocketClient {
         
         this.ws.on('open', () => {
           this.connected = true;
+          this._seenBlockHashes.clear();
           log('info', `[P2P-WS] Connected to ${this.url}`);
           this._send({ type: 'subscribe', topics: ['blocks', 'transactions'] });
           this._flushQueue();
