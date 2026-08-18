@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "cli": "node cli.js",
+    "cli": "node cli.js"
   },
   "dependencies": {
     "@ethereumjs/block": "^10.1.2",
