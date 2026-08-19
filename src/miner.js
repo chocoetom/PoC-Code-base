@@ -55,10 +55,6 @@ class Miner {
     const now = Math.floor(Date.now() / 1000);
     const tx = this.db.transaction(() => {
       this.db.prepare('INSERT OR IGNORE INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(this.address, this.cfg.minerPublicKey || '', '0', 0, now, now);
-      if (this.cfg.plotSizeGb) {
-        const up = this.db.prepare('UPDATE plot_commitments SET size_gb = ? WHERE miner = ?').run(this.cfg.plotSizeGb, this.address);
-        if (up.changes > 0) log('info', `Miner: plot size override PLOT_SIZE=${this.cfg.plotSizeGb} GB applied to ${up.changes} plot(s)`);
-      }
     });
     tx();
     log('info', `Miner started — address ${address.slice(0, 10)}…`);

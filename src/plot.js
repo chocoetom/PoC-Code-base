@@ -156,17 +156,7 @@ function createPlotFile(plotPath, plotId, minerAddress, sizeGb, accountId) {
     accountId = Buffer.from(accountId, 'hex');
   }
 
-  const leafBuf = Buffer.alloc(totalScoops * 32);
-  for (let n = 0; n < numNonces; n++) {
-    const nonceScoops = Math.min(scoopsPerNonce, totalScoops - n * scoopsPerNonce);
-    const scoopData = generateV3Scoops(accountId, n, nonceScoops);
-    scoopData.copy(leafBuf, n * scoopsPerNonce * 32, 0, nonceScoops * 32);
-  }
-
-  const treeNodes = computeMerkleTreeNodes(leafBuf, totalScoops);
-  const root = treeNodes.subarray(-32).toString('hex') || ZERO_HASH;
-
-  const plotSize = plotTotalSize(totalScoops);
+  const treeStart = HEADER_SIZE + totalScoops * SCOOP_SIZE;
   const fd = fs.openSync(plotPath, 'w');
   try {
     const header = Buffer.alloc(HEADER_SIZE);
@@ -179,7 +169,7 @@ function createPlotFile(plotPath, plotId, minerAddress, sizeGb, accountId) {
     header.write(minerAddress.padEnd(44, '\0'), 20, 44, 'ascii');
     header.writeUInt32LE(totalScoops, 64);
     header.writeUInt32LE(SCOOP_SIZE, 68);
-    header.write(root, 72, 64, 'hex');
+    header.write(ZERO_HASH, 72, 64, 'hex');
     accountId.copy(header, 104);
     fs.writeSync(fd, header, 0, HEADER_SIZE, 0);
 
@@ -189,11 +179,45 @@ function createPlotFile(plotPath, plotId, minerAddress, sizeGb, accountId) {
       fs.writeSync(fd, scoopData, 0, scoopData.length, HEADER_SIZE + n * scoopsPerNonce * SCOOP_SIZE);
     }
 
-    fs.writeSync(fd, treeNodes, 0, treeNodes.length, HEADER_SIZE + totalScoops * SCOOP_SIZE);
+    const NODE32 = 32;
+    const MERKLE_BATCH = 65536;
+    const pairBuf = Buffer.alloc(64);
+    let curCount = totalScoops;
+    let curReadOff = HEADER_SIZE;
+    let treeWriteOff = 0;
+
+    while (curCount > 1) {
+      const nextCount = (curCount + 1) >> 1;
+      for (let gi = 0; gi < nextCount; gi += MERKLE_BATCH) {
+        const batchPairs = Math.min(MERKLE_BATCH, nextCount - gi);
+        const readStart = gi * 2;
+        const readCount = Math.min(batchPairs * 2, curCount - readStart);
+        const readBuf = Buffer.alloc(readCount * NODE32);
+        fs.readSync(fd, readBuf, 0, readCount * NODE32, curReadOff + readStart * NODE32);
+        const writeBuf = Buffer.alloc(batchPairs * NODE32);
+        for (let j = 0; j < batchPairs; j++) {
+          const li = j * 2;
+          const ri = Math.min(li + 1, readCount - 1);
+          readBuf.copy(pairBuf, 0, li * NODE32, (li + 1) * NODE32);
+          readBuf.copy(pairBuf, NODE32, ri * NODE32, (ri + 1) * NODE32);
+          sha256buf(pairBuf).copy(writeBuf, j * NODE32);
+        }
+        fs.writeSync(fd, writeBuf, 0, batchPairs * NODE32, treeStart + treeWriteOff + gi * NODE32);
+      }
+      curReadOff = treeStart + treeWriteOff;
+      treeWriteOff += nextCount * NODE32;
+      curCount = nextCount;
+    }
+
+    const rootBuf = Buffer.alloc(NODE32);
+    fs.readSync(fd, rootBuf, 0, NODE32, treeStart + treeWriteOff - NODE32);
+    const root = rootBuf.toString('hex') || ZERO_HASH;
+    fs.writeSync(fd, root, 72, 64, 'hex');
+
+    return { plotId, sizeGb, totalScoops, merkleRoot: root, accountId: accountId.toString('hex') };
   } finally {
     fs.closeSync(fd);
   }
-  return { plotId, sizeGb, totalScoops, merkleRoot: root, accountId: accountId.toString('hex') };
 }
 
 module.exports = { buildPocProof, computePlotMerkleRoot, createPlotFile, detectPlotFormat, computeAccountId, generateV3Scoops, MAX_PLOT_GB };

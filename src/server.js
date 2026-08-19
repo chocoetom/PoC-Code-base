@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage } = require('./crypto');
 const { log, getLogBuffer } = require('./config');
@@ -114,9 +115,18 @@ class Server {
     const walletLimiter = rateLimit({ windowMs: 60000, max: 10, keyPrefix: 'wlt', message: 'Too many wallet requests' });
     const p2pLimiter = rateLimit({ windowMs: 60000, max: 60, keyPrefix: 'p2p', message: 'Too many P2P requests' });
 
+    const requireAdmin = (req, res, next) => {
+      const token = req.headers['x-admin-token'] || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+      if (token === this.cfg.adminToken) return next();
+      res.status(401).json({ error: 'unauthorized' });
+    };
+
     app.use(apiLimiter);
 
-    const serveDashboard = (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+    const serveDashboard = (req, res) => {
+      const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+      res.type('html').send(html.replace('__CHOHUB_TOKEN__', this.cfg.adminToken || ''));
+    };
     app.get('/dashboard', serveDashboard);
     app.get('/', (req, res) => {
       if (req.accepts('html')) return serveDashboard(req, res);
@@ -315,7 +325,7 @@ app.get('/api/state', (req, res) => {
       res.json(u);
     });
 
-    app.post('/api/wallet/import', walletLimiter, (req, res) => {
+    app.post('/api/wallet/import', requireAdmin, walletLimiter, (req, res) => {
       const { address, public_key } = req.body;
       if (!address || !public_key) return res.status(400).json({ error: 'address and public_key required (private keys never sent to node)' });
       const normalizedAddress = address.toLowerCase();
@@ -390,16 +400,16 @@ app.get('/api/state', (req, res) => {
 
     app.get('/api/mining/metrics', (req, res) => res.json(this.miner.getMetrics()));
     app.get('/api/mining/status', (req, res) => res.json({ mining: this.miner.active, address: this.miner.address }));
-    app.post('/api/mining/start', (req, res) => { this.miner.start(req.body.address || this.cfg.minerAddress); res.json({ ok: true, mining: this.miner.active, address: this.miner.address }); });
-    app.post('/api/mining/stop', (req, res) => { this.miner.stop(); res.json({ ok: true, mining: false }); });
+    app.post('/api/mining/start', requireAdmin, (req, res) => { this.miner.start(req.body.address || this.cfg.minerAddress); res.json({ ok: true, mining: this.miner.active, address: this.miner.address }); });
+    app.post('/api/mining/stop', requireAdmin, (req, res) => { this.miner.stop(); res.json({ ok: true, mining: false }); });
 
-    app.post('/api/mining/config', (req, res) => {
+    app.post('/api/mining/config', requireAdmin, (req, res) => {
       const { address, threads, priority } = req.body;
       if (address) this.miner.address = address;
       res.json({ ok: true, address: this.miner.address });
     });
 
-    app.post('/api/poc/create_plot', (req, res) => {
+    app.post('/api/poc/create_plot', requireAdmin, (req, res) => {
       const { miner, plot_id, size_gb, plot_dir } = req.body;
       const address = miner || this.cfg.minerAddress;
       if (!address || !plot_id || !size_gb) return res.status(400).json({ error: 'miner address, plot_id, size_gb required' });
@@ -415,7 +425,7 @@ app.get('/api/state', (req, res) => {
     });
     
     app.get('/api/poc/plots/:miner', (req, res) => res.json({ plots: this.db.prepare('SELECT * FROM plot_commitments WHERE miner = ?').all(req.params.miner) }));
-    app.post('/api/poc/register_plot', (req, res) => {
+    app.post('/api/poc/register_plot', requireAdmin, (req, res) => {
       const { miner, plot_id, size_gb, merkle_root = '' } = req.body;
       if (!miner || !plot_id || !size_gb) return res.status(400).json({ error: 'miner, plot_id, size_gb required' });
       console.log(`Registering plot: miner=${miner}, plot_id=${plot_id}, size_gb=${size_gb}, merkle_root=${merkle_root}`);
@@ -440,8 +450,9 @@ app.get('/api/state', (req, res) => {
 
     app.post('/api/contracts/deploy', async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
-      const { code, sender, nonce } = req.body || {};
-      if (!code || !sender) return res.status(400).json({ error: 'code and sender required' });
+      const { code, sender, private_key } = req.body || {};
+      if (!code || !sender) return res.status(400).json({ error: 'code, sender, and private_key required' });
+      if (!private_key) return res.status(401).json({ error: 'private_key required to sign deploy tx' });
       try {
         const result = await this.smartContracts.CreateSmartContract(code, {}, sender, Number(nonce) || 0);
         res.json({ ...result, contractAddress: result.contractAddress });
@@ -589,7 +600,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       res.json(result);
     });
 
-    app.post('/api/p2p/offers/:id/take', mutationLimiter, async (req, res) => {
+    app.post('/api/p2p/offers/:id/take', requireAdmin, mutationLimiter, async (req, res) => {
       if (!p2pExchangeEnabled()) return p2pExchangeDisabled(res);
       if (!p2pExchange) return res.status(500).json({ error: 'P2P exchange not initialized' });
       try {
@@ -600,7 +611,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       }
     });
 
-    app.post('/api/p2p/offers/:id/claim', mutationLimiter, async (req, res) => {
+    app.post('/api/p2p/offers/:id/claim', requireAdmin, mutationLimiter, async (req, res) => {
       if (!p2pExchangeEnabled()) return p2pExchangeDisabled(res);
       if (!p2pExchange) return res.status(500).json({ error: 'P2P exchange not initialized' });
       try {
@@ -611,7 +622,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       }
     });
 
-    app.post('/api/p2p/offers/:id/refund', mutationLimiter, async (req, res) => {
+    app.post('/api/p2p/offers/:id/refund', requireAdmin, mutationLimiter, async (req, res) => {
       if (!p2pExchangeEnabled()) return p2pExchangeDisabled(res);
       if (!p2pExchange) return res.status(500).json({ error: 'P2P exchange not initialized' });
       try {
@@ -622,14 +633,14 @@ const validation = await this.chain.validateTxForMempool(tx);
       }
     });
 
-    app.post('/api/stake', (req, res) => {
+    app.post('/api/stake', requireAdmin, (req, res) => {
       const { amount, address } = req.body;
       if (!amount || !address) return res.status(400).json({ error: 'amount and address required' });
       res.json({ ok: true, amount: String(amount), address, stakeId: 'stake_' + Date.now() });
       log('info', `[STAKE] Received stake request: amount=${amount}, address=${address}`);
     });
 
-    app.post('/api/node/settings', (req, res) => {
+    app.post('/api/node/settings', requireAdmin, (req, res) => {
       const updates = req.body;
       if (!updates || typeof updates !== 'object') return res.status(400).json({ error: 'settings object required' });
       Object.assign(this.cfg, updates);
@@ -637,10 +648,6 @@ const validation = await this.chain.validateTxForMempool(tx);
       res.json({ ok: true, config: this.cfg });
     });
 
-    const requireAdmin = (req, res, next) => {
-      if (req.headers['x-admin-token'] === this.cfg.adminToken) return next();
-      res.status(401).json({ error: 'unauthorized' });
-    };
     app.get('/api/logs', requireAdmin, (req, res) => res.json({ logs: getLogBuffer() }));
 
     app.post('/api/node/broadcast/block', p2pLimiter, async (req, res) => {
@@ -717,16 +724,16 @@ const validation = await this.chain.validateTxForMempool(tx);
       res.json({ vote_id, approve: true, reason: 'accepted', voter_address: this.cfg.minerAddress || '', stake: 0 });
     });
 
-    app.post('/api/plots/add', (req, res) => {
+    app.post('/api/plots/add', requireAdmin, (req, res) => {
       const { miner, plot_id, size_gb, merkle_root = '' } = req.body;
       if (!miner || !plot_id || !size_gb) return res.status(400).json({ error: 'miner, plot_id, size_gb required' });
       this.db.prepare('INSERT OR IGNORE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, created_at) VALUES (?,?,?,?,?)').run(plot_id, miner, merkle_root, parseFloat(size_gb), Math.floor(Date.now() / 1000));
       log('info', `[MINERS] Plot added: miner=${miner}, plot_id=${plot_id}, size_gb=${size_gb}`);
       res.json({ ok: true, plot_id, miner });
     });
-    app.delete('/api/plots/:id', (req, res) => { this.db.prepare('DELETE FROM plot_commitments WHERE plot_id = ?').run(req.params.id); res.json({ ok: true }); });
+    app.delete('/api/plots/:id', requireAdmin, (req, res) => { this.db.prepare('DELETE FROM plot_commitments WHERE plot_id = ?').run(req.params.id); res.json({ ok: true }); });
 
-    app.post('/api/node/forge', async (req, res) => {
+    app.post('/api/node/forge', requireAdmin, async (req, res) => {
       const challenge = this.challengeMgr.getOrCreate();
       if (!challenge) return res.status(400).json({ error: 'no challenge' });
       await this.challengeMgr._forgeBlockForChallenge(this.chain, this.sync, challenge);
@@ -785,36 +792,22 @@ const validation = await this.chain.validateTxForMempool(tx);
     app.get('/health/liveness', (req, res) => res.json({ ok: true }));
     app.get('/health/readiness', (req, res) => res.json({ ok: true }));
 
-    const http = require('http');
-    const initialPort = this.cfg.port;
-    const maxRetries = 10;
-    let attempt = 0;
-
-    const bind = (port) => {
-      this.server = http.createServer(app);
-      this.server.listen(port, '0.0.0.0', () => {
+    let port = this.cfg.port;
+    this.server = require('http').createServer(app);
+    this.server.listen(port, '0.0.0.0', () => {
+      log('info', `HTTP server listening on port ${port}`);
+    });
+    this.server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        port++;
         this.cfg.port = port;
-        log('info', `HTTP server listening on port ${port}`);
-      });
-      this.server.on('error', (err) => {
-        if (err.code === 'EADDRINUSE') {
-          if (attempt >= maxRetries) {
-            log('error', `Unable to bind to a port after ${maxRetries} retries starting from ${initialPort}`);
-            process.exit(1);
-            return;
-          }
-          attempt++;
-          const nextPort = port + 1;
-          log('info', `Port ${port} busy, retrying on ${nextPort}`);
-          this.server.close(() => bind(nextPort));
-        } else {
-          log('error', `Server error: ${err.message}`);
-          process.exit(1);
-        }
-      });
-    };
-
-    bind(initialPort);
+        this.server.listen(port);
+        log('info', `Port busy, using ${port}`);
+      } else {
+        log('error', `Server error: ${err.message}`);
+        process.exit(1);
+      }
+    });
     this._startTime = Date.now();
     this._fetchPeerStorage();
     setInterval(() => this._fetchPeerStorage(), 30000);
