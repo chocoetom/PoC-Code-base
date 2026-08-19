@@ -35,7 +35,7 @@ const COMMANDS = [
     { name: '--port', desc: 'HTTP port (default: 3001)' },
     { name: '--mining', desc: 'Enable mining' },
     { name: '--miner-address', desc: 'Miner wallet address' },
-    { name: '--storage-dirs', desc: 'Comma-separated plot dirs' },
+    { name: '--storage-dirs', desc: 'plot dirs' },
   ]},
   { cmd: 'node:status', group: 'node', desc: 'Show node status from RPC', args: [
     { name: '--rpc', desc: 'RPC endpoint URL' },
@@ -60,6 +60,13 @@ const COMMANDS = [
     { name: '--value', desc: 'Amount in wei (1 CC = 1e18)' },
     { name: '--private-key', desc: 'Sender private key (hex)' },
     { name: '--fee', desc: 'Transaction fee (optional)' },
+    { name: '--rpc', desc: 'RPC endpoint URL' },
+  ]},
+  { cmd: 'storage:generate', group: 'storage', desc: 'Generate a new PoC plot file on disk', args: [
+    { name: '--address', desc: 'Miner address' },
+    { name: '--size', desc: 'Size in GB (e.g. 0.1, 1, 10)' },
+    { name: '--id', desc: 'Plot ID (random hex if omitted)' },
+    { name: '--dir', desc: 'Output directory (default: ./plots)' },
     { name: '--rpc', desc: 'RPC endpoint URL' },
   ]},
   { cmd: 'storage:commit', group: 'storage', desc: 'Commit a plot for mining', args: [
@@ -137,8 +144,8 @@ ${C.cyn(`      _                     _           _
 |_| |_|\___|_| .__/  |___/\___|\__|\__,_| .__/ 
              |_|                        |_|    `)}
 
-  ${C.bold('ChocoHub CLI v' + VERSION)}
-  ${C.dim('Usage: choco <command> [options]')}
+  ${C.bold('ChocoHub CLI :D' + VERSION)}
+  ${C.dim('Usage: node cli.js <category>:<options>')}
 `;
   console.log(banner);
 
@@ -188,16 +195,25 @@ function parseArgs(argv) {
 }
 
 function rpcCall(url, method, params = {}) {
+  const { adminToken, ...body } = params;
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const mod = u.protocol === 'https:' ? require('https') : require('http');
-    const body = JSON.stringify(params);
+    const bodyStr = JSON.stringify(body);
+    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(bodyStr) };
+    if (adminToken) {
+      let token = adminToken;
+      if (adminToken === true) {
+        try { token = fs.readFileSync(path.join(__dirname, 'node-data', 'admin_token.txt'), 'utf8').trim(); } catch {}
+      }
+      if (token) headers['x-admin-token'] = token;
+    }
     const req = mod.request({
       hostname: u.hostname,
       port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: method,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers,
       rejectUnauthorized: false,
       timeout: 30000
     }, res => {
@@ -209,7 +225,7 @@ function rpcCall(url, method, params = {}) {
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(body);
+    req.write(bodyStr);
     req.end();
   });
 }
@@ -356,6 +372,26 @@ async function cmdWalletSend(args) {
   tx.signature = CHOCOHUB.signMessage(CHOCOHUB.canonicalTxMessage(tx), privKey);
   const res = await rpcCall(url, '/api/tx/send', { method: 'POST', body: tx });
   console.log(`  ${C.grn('Transaction sent:')}`, res);
+}
+
+async function cmdStorageGenerate(args) {
+  const { address, size, id, dir } = args;
+  if (!size) { console.error(`  ${C.red('Need --size (e.g. 0.1, 1, 10)')}`); return; }
+  const plotId = id || crypto.randomBytes(8).toString('hex');
+  const url = getRpcUrl(args);
+  console.log(`  Generating plot: ${C.cyn(plotId)} — ${C.ylw(size)} GB`);
+  try {
+    const res = await rpcCall(url, '/api/poc/create_plot', {
+      miner: address || '', plot_id: plotId, size_gb: parseFloat(size), plot_dir: dir || '',
+      adminToken: true,
+    });
+    if (res.error) { console.error(`  ${C.red('Error:')} ${res.error}`); return; }
+    console.log(`  ${C.grn('Plot created:')}`);
+    console.log(`    ID:      ${C.cyn(res.plot_id)}`);
+    console.log(`    Size:    ${C.ylw(res.size_gb)} GB`);
+    console.log(`    Merkle:  ${res.merkle_root ? res.merkle_root.slice(0, 24) + '...' : '?'}`);
+    console.log(`    Path:    ${res.path || '?'}`);
+  } catch (e) { console.error(`  ${C.red('Error:')} ${e.message}`); }
 }
 
 async function cmdStorageCommit(args) {
@@ -546,6 +582,7 @@ async function main() {
     'wallet:list': cmdWalletList,
     'wallet:balance': cmdWalletBalance,
     'wallet:send': cmdWalletSend,
+    'storage:generate': cmdStorageGenerate,
     'storage:commit': cmdStorageCommit,
     'storage:list': cmdStorageList,
     'mining:start': cmdMiningStart,
