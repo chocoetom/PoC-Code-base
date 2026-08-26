@@ -420,8 +420,6 @@ app.get('/api/state', (req, res) => {
       res.json({ ok: true, plot_id, miner });
     });
 
-    // Public plot registration for external miners: authenticated with an Ed25519
-    // signature from the wallet that owns the miner address.
     app.post('/api/poc/register_plot_public', mutationLimiter, (req, res) => {
       const { miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature } = req.body || {};
       if (!miner || !plot_id || !merkle_root || size_gb == null || total_scoops == null || !public_key || !signature) {
@@ -442,8 +440,6 @@ app.get('/api/state', (req, res) => {
       const now = Math.floor(Date.now() / 1000);
       this.db.prepare('INSERT OR REPLACE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, total_scoops, created_at) VALUES (?,?,?,?,?,?)')
         .run(plot_id, normalizedAddress, merkle_root, parseFloat(String(size_gb)) || 0, safeInt(total_scoops, 0), now);
-      // Register the miner's pubkey so their winner_proof signatures can be
-      // verified later even without an explicit wallet/register call.
       const existingUser = this.db.prepare('SELECT address FROM users WHERE lower(address) = lower(?)').get(normalizedAddress);
       if (!existingUser) {
         this.db.prepare('INSERT INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
