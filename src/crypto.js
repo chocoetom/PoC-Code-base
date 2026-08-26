@@ -281,6 +281,17 @@ function proofMessage(challengeId, miner, deadline, plotId) {
   }, ['type', 'challenge_id', 'miner', 'deadline', 'plot_id'].sort());
 }
 
+function plotRegisterMessage(miner, plotId, merkleRoot, sizeGb, totalScoops) {
+  return JSON.stringify({
+    type: 'plot_register',
+    miner: String(miner).toLowerCase(),
+    plot_id: String(plotId),
+    merkle_root: String(merkleRoot),
+    size_gb: String(sizeGb),
+    total_scoops: String(totalScoops),
+  }, ['merkle_root', 'miner', 'plot_id', 'size_gb', 'total_scoops', 'type'].sort());
+}
+
 function hashBlock(bloco) {
   let rewardsStr = '';
   if (Array.isArray(bloco.rewards)) {
@@ -480,7 +491,7 @@ function getChainWorkForBlock(blk) {
 module.exports = {
   ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt, pubkeyToAddress, pubKeyToAddress,
   signMessage, verifySignature, merkleRoot, merkleRootBuffer, merkleRootBuf, merkleRootBuf2, computeMerkleProof, computeMerkleProofBuf, computeMerkleProofBuf2, computeMerkleTreeNodes, verifyMerkleProof, verifyMerkleProofBuf,
-  canonicalTxMessage, hashTransaction, hashBlock, blockMessage, proofMessage,
+  canonicalTxMessage, hashTransaction, hashBlock, blockMessage, proofMessage, plotRegisterMessage,
   computeStateRoot, computeStateRootAfterTxs, computeContractStateRoot, calculateMiningReward, isBetterChainCandidate,
   SCOOP_SIZE, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, PLOT_FORMAT_V3, merkleTreeInternalNodeCount, plotScoopCount, plotScoopCountOrig,
   computeDeadline, deriveSampleIndexes, getChainWorkForBlock,

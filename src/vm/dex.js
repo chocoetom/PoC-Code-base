@@ -1,10 +1,11 @@
-import { BN } from 'bn.js';
-import { createBlock } from '@ethereumjs/block';
-import crypto from 'crypto';
-import { AbiCoder, Interface, id } from 'ethers';
-import { hashTransaction, ZERO_HASH, calculateMiningReward, computeStateRoot, computeContractStateRoot } from '../crypto.js';
-import { compileHTLC, compileLPMarket, compileCcPool } from './contracts/index.js';
-import pluginRegistry from './modules/index.js';
+const { BN } = require('bn.js');
+const { createBlock } = require('@ethereumjs/block');
+const crypto = require('crypto');
+const { AbiCoder, Interface, id } = require('ethers');
+const { hashTransaction, ZERO_HASH, calculateMiningReward, computeStateRoot, computeContractStateRoot } = require('../crypto');
+const { compileHTLC, compileLPMarket, compileCcPool } = require('./contracts/index.js');
+const pluginRegistry = require('./modules/index.js');
+const { privateToAddress } = require('@ethereumjs/util');
 
 const WEI = 10n ** 18n;
 const FEE = 21000n;
@@ -86,8 +87,6 @@ function htlcInit(receiver, hashlock, timelock) {
   return '0x' + compileHTLC() + ctorArgs.slice(2);
 }
 
-import { privateToAddress } from '@ethereumjs/util';
-
 function ccFromEthKey(privKeyHex) {
   return '0xcc' + privateToAddress(Buffer.from(String(privKeyHex).replace(/^0x/i, ''), 'hex')).toString('hex');
 }
@@ -101,8 +100,8 @@ function formatAmount(wei, decimals = 18) {
 }
 
 const DEFAULT_TX_OPTS = {
-  skipTxValidation: true, skipPocValidation: true, skipSignature: true,
-  skipHashValidation: true, skipTargetValidation: true, skipStateValidation: false,
+  skipTxValidation: false, skipPocValidation: false, skipSignature: false,
+  skipHashValidation: false, skipTargetValidation: false, skipStateValidation: false,
 };
 
 function createDex(opts) {
@@ -508,7 +507,7 @@ function createDex(opts) {
   return dex;
 }
 
-export {
+module.exports = {
   createDex, WEI, FEE, evmAddress, encodeCall, blockAt, readUint, decodeWords, htlcInit, ccTx, makeBlock,
   ccFromEthKey, formatAmount, bn, DEFAULT_TX_OPTS,
 };

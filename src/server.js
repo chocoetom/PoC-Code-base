@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage } = require('./crypto');
+const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage, verifySignature, plotRegisterMessage } = require('./crypto');
 const { log, getLogBuffer } = require('./config');
 const { createPlotFile, MAX_PLOT_GB } = require('./plot');
 
@@ -39,13 +39,12 @@ setInterval(cleanupRateLimit, 60000);
 
 
 class Server {
-  constructor(cfg, db, chain, peers, sync, miner, challengeMgr, registry, NODE_ID, smartContracts = null, p2pWsServer = null) {
+  constructor(cfg, db, chain, peers, sync, challengeMgr, registry, NODE_ID, smartContracts = null, p2pWsServer = null) {
     this.cfg = cfg;
     this.db = db;
     this.chain = chain;
     this.peers = peers;
     this.sync = sync;
-    this.miner = miner;
     this.challengeMgr = challengeMgr;
     this.registry = registry;
     this.NODE_ID = NODE_ID;
@@ -149,6 +148,7 @@ class Server {
       });
     });
 
+// USE THIS ENDPOINT FOR STATS (its better)
 app.get('/api/state', (req, res) => {
   const running = !!this.chain;
   const config = this.cfg;
@@ -159,7 +159,6 @@ app.get('/api/state', (req, res) => {
     config: {
       port: config.port,
       minerAddress: config.minerAddress,
-      miningEnabled: config.miningEnabled,
       chainId: config.chainId,
       chainName: config.chainName,
       symbol: config.symbol
@@ -362,8 +361,8 @@ app.get('/api/state', (req, res) => {
     app.get('/api/node/status', (req, res) => res.json({
       height: this.chain.height, hash: this.chain.bestHash,
       chain_work: (this.chain.getBlock(this.chain.height) || {}).chain_work || '0',
-      peer_count: this.peers.count(), mining_active: this.miner.active,
-      miner_address: this.miner.address, node_url: this.cfg.nodeUrl,
+      peer_count: this.peers.count(), mining_active: false,
+      miner_address: this.cfg.minerAddress || '', node_url: this.cfg.nodeUrl,
     }));
     app.get('/api/node/peers', (req, res) => res.json({ peers: this.peers.all(100) }));
     app.get('/api/node/peers/gossip', (req, res) => res.json({ peers: this.peers.gossipPeers(50) }));
@@ -382,7 +381,7 @@ app.get('/api/state', (req, res) => {
       res.json(ch);
     });
 
-    app.post('/api/mining/submit-proof', (req, res) => {
+    app.post('/api/mining/submit-proof', mutationLimiter, (req, res) => {
       const { challenge_id, miner, plot_id, deadline, proof_packet, proof_signature } = req.body;
       if (!challenge_id || !miner || !plot_id || deadline == null) return res.status(400).json({ error: 'challenge_id, miner, plot_id, deadline required' });
       const packet = proof_packet || {};
@@ -396,17 +395,6 @@ app.get('/api/state', (req, res) => {
         if (this.p2pWsServer) this.p2pWsServer.broadcastBlock(block);
       }
       res.json(result);
-    });
-
-    app.get('/api/mining/metrics', (req, res) => res.json(this.miner.getMetrics()));
-    app.get('/api/mining/status', (req, res) => res.json({ mining: this.miner.active, address: this.miner.address }));
-    app.post('/api/mining/start', requireAdmin, (req, res) => { this.miner.start(req.body.address || this.cfg.minerAddress); res.json({ ok: true, mining: this.miner.active, address: this.miner.address }); });
-    app.post('/api/mining/stop', requireAdmin, (req, res) => { this.miner.stop(); res.json({ ok: true, mining: false }); });
-
-    app.post('/api/mining/config', requireAdmin, (req, res) => {
-      const { address, threads, priority } = req.body;
-      if (address) this.miner.address = address;
-      res.json({ ok: true, address: this.miner.address });
     });
 
     app.post('/api/poc/create_plot', requireAdmin, (req, res) => {
@@ -433,6 +421,36 @@ app.get('/api/state', (req, res) => {
       res.json({ ok: true, plot_id, miner });
     });
 
+    app.post('/api/poc/register_plot_public', mutationLimiter, (req, res) => {
+      const { miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature } = req.body || {};
+      if (!miner || !plot_id || !merkle_root || size_gb == null || total_scoops == null || !public_key || !signature) {
+        return res.status(400).json({ error: 'miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature required' });
+      }
+      const normalizedAddress = String(miner).toLowerCase();
+      try {
+        if (pubkeyToAddress(public_key).toLowerCase() !== normalizedAddress) {
+          return res.status(400).json({ error: 'address does not match public key' });
+        }
+        const msg = plotRegisterMessage(normalizedAddress, plot_id, merkle_root, String(size_gb), String(total_scoops));
+        if (!verifySignature(msg, signature, public_key)) {
+          return res.status(401).json({ error: 'invalid registration signature' });
+        }
+      } catch (e) {
+        return res.status(400).json({ error: `invalid public key or signature encoding: ${e.message}` });
+      }
+      const now = Math.floor(Date.now() / 1000);
+      this.db.prepare('INSERT OR REPLACE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, total_scoops, created_at) VALUES (?,?,?,?,?,?)')
+        .run(plot_id, normalizedAddress, merkle_root, parseFloat(String(size_gb)) || 0, safeInt(total_scoops, 0), now);
+      const existingUser = this.db.prepare('SELECT address FROM users WHERE lower(address) = lower(?)').get(normalizedAddress);
+      if (!existingUser) {
+        this.db.prepare('INSERT INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
+      } else {
+        this.db.prepare('UPDATE users SET public_key_ed25519 = ?, updated_at = ? WHERE lower(address) = lower(?)').run(public_key, now, normalizedAddress);
+      }
+      log('info', `[MINERS] Plot registered (signed): miner=${normalizedAddress}, plot_id=${plot_id}, size_gb=${size_gb}, merkle_root=${merkle_root}`);
+      res.json({ ok: true, plot_id, miner: normalizedAddress });
+    });
+
     const contractsEnabled = () => !!this.cfg.smartContractsEnabled && this.smartContracts;
     const contractsDisabled = (res) => res.status(503).json({ error: 'smart contracts disabled on this node', enabled: false });
 
@@ -448,7 +466,7 @@ app.get('/api/state', (req, res) => {
       res.json({ contract: c });
     });
 
-    app.post('/api/contracts/deploy', async (req, res) => {
+    app.post('/api/contracts/deploy', mutationLimiter, async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
       const { code, sender, private_key } = req.body || {};
       if (!code || !sender) return res.status(400).json({ error: 'code, sender, and private_key required' });
@@ -473,7 +491,7 @@ app.get('/api/state', (req, res) => {
       }
     });
 
-    app.post('/api/contracts/call', async (req, res) => {
+    app.post('/api/contracts/call', mutationLimiter, async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
       const { address, sender, data, value } = req.body || {};
       if (!address || !sender) return res.status(400).json({ error: 'address and sender required' });
@@ -487,7 +505,7 @@ app.get('/api/state', (req, res) => {
       }
     });
 
-    app.post('/api/contracts/call-batch', async (req, res) => {
+    app.post('/api/contracts/call-batch', mutationLimiter, async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
       const { address, sender, calls } = req.body || {};
       if (!address || !sender || !Array.isArray(calls)) return res.status(400).json({ error: 'address, sender, and calls[] required' });
@@ -503,7 +521,7 @@ app.get('/api/state', (req, res) => {
       res.json({ ok: true, results });
     });
 
-    app.post('/api/contracts/execute', async (req, res) => {
+    app.post('/api/contracts/execute', mutationLimiter, async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
       try {
         const { address, sender, data, value, private_key } = req.body || {};
@@ -707,7 +725,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       res.json({ ok: true, peers: this.peers.gossipPeers(20), stats: this.registry.getStats(), chain_id: this.cfg.chainId });
     });
 
-    app.post('/api/challenge/submit', (req, res) => {
+    app.post('/api/challenge/submit', mutationLimiter, (req, res) => {
       const { challenge_id, miner, plot_id, deadline, proof_packet, proof_signature } = req.body;
       if (!challenge_id || !miner || !plot_id || deadline == null) return res.status(400).json({ error: 'challenge_id, miner, plot_id, deadline required' });
       const packet = proof_packet || {};
@@ -770,18 +788,18 @@ const validation = await this.chain.validateTxForMempool(tx);
     app.get('/api/health', (req, res) => res.json({
       ok: true, status: 'ok', height: this.chain.height, hash: this.chain.bestHash,
       peers: this.peers.count(), mempool: this.db.prepare('SELECT COUNT(*) as c FROM mempool').get().c,
-      mining: this.miner.active, uptime: Math.floor((Date.now() - this._startTime) / 1000),
+      mining: false, uptime: Math.floor((Date.now() - this._startTime) / 1000),
     }));
 
     app.get('/api/state', (req, res) => {
       const h = { height: this.chain.height, hash: this.chain.bestHash, chain_work: (this.chain.getBlock(this.chain.height) || {}).chain_work || '0', peers: this.peers.count(), uptime: Math.floor((Date.now() - this._startTime) / 1000) };
       const st = this.chain.getStats();
-      const mining = { active: this.miner.active, address: this.miner.address, ...this.miner.getMetrics() };
+      const mining = { active: false };
       const mempoolTxs = this.chain.getMempoolForBlock(50);
       const mempoolCount = this.db.prepare('SELECT COUNT(*) as c FROM mempool').get().c;
       res.json({
         running: true, uptime: h.uptime,
-        config: { port: this.cfg.port, minerAddress: this.cfg.minerAddress, miningEnabled: this.cfg.miningEnabled, seedPeers: this.cfg.seedPeers, discoveryPort: this.cfg.discoveryPort || 7777, chainId: this.cfg.chainId, chainName: this.cfg.chainName },
+        config: { port: this.cfg.port, minerAddress: this.cfg.minerAddress, seedPeers: this.cfg.seedPeers, discoveryPort: this.cfg.discoveryPort || 7777, chainId: this.cfg.chainId, chainName: this.cfg.chainName },
         wallets: this.db.prepare('SELECT address FROM users ORDER BY CAST(balance AS INTEGER) DESC LIMIT 50').all().map(w => ({ address: w.address, name: w.address, balance: null, encrypted: false })),
         node: { health: h, stats: st, mining, mempool: mempoolTxs, mempool_count: mempoolCount },
         network_storage: this._peerStorageCache,

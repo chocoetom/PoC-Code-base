@@ -20,7 +20,6 @@ function patchLevelWsDoubleClose() {
       return originalEmit.call(this, eventName, ...args);
     };
   } catch (e) {
-    // noop
   }
 }
 
@@ -31,11 +30,48 @@ const initialSmartContractGasPrice = GAS_PARAMS.initialSmartContractGasPrice;
 
 const InitialSmartContractGasPriceHumanReadable = (initialSmartContractGasPrice / 10 ** 9).toString() + ' Gwei';
 
-const MAX_CONTRACT_CODE_SIZE = 24576; // 24 KB
+const MAX_CONTRACT_CODE_SIZE = 24576;
 
 let db = null;
 
-const vmCache = new Map();
+class LRUCache {
+  constructor(maxSize = 100) {
+    this.maxSize = maxSize;
+    this.map = new Map();
+  }
+
+  get(key) {
+    if (!this.map.has(key)) return undefined;
+    const value = this.map.get(key);
+    this.map.delete(key);
+    this.map.set(key, value);
+    return value;
+  }
+
+  set(key, value) {
+    if (this.map.has(key)) {
+      this.map.delete(key);
+    } else if (this.map.size >= this.maxSize) {
+      const oldestKey = this.map.keys().next().value;
+      this.map.delete(oldestKey);
+    }
+    this.map.set(key, value);
+  }
+
+  has(key) {
+    return this.map.has(key);
+  }
+
+  clear() {
+    this.map.clear();
+  }
+
+  get size() {
+    return this.map.size;
+  }
+}
+
+const vmCache = new LRUCache(100);
 const knownSlots = new Map();
 const storageLoadTimestamps = new Map();
 const STORAGE_LOAD_TTL_MS = 3000;
@@ -45,8 +81,8 @@ function setDatabase(database) {
 }
 
 function clearVmCache() {
-  vmCache.clear();
   knownSlots.clear();
+  storageLoadTimestamps.clear();
 }
 
 async function getVm(contractAddress) {
@@ -502,6 +538,7 @@ async function getAccountBalance(address, inVmOfContract) {
   return account.balance;
 }
 
+// export
 module.exports = {
   setDatabase, clearVmCache, CreateSmartContract, runSmartContract, getSmartContract, listSmartContracts,
   getVm, loadAllContractState, saveContractStorage, loadContractStorage,

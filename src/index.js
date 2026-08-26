@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { loadConfig } = require('./config');
+const { loadConfig, log } = require('./config');
 const { ChocoNode } = require('./node');
 
 const args = process.argv.slice(2);
@@ -33,8 +33,7 @@ ${CYAN}      _                     _           _
 
   ${GREEN}ENVIRONMENT VARIABLES${RESET}
     ${DIM}PORT${RESET}              3001                      HTTP port
-    ${DIM}MINING_ENABLED${RESET}    true                      Enable mining
-    ${DIM}MINER_ADDRESS${RESET}     0x...                     Miner wallet address
+    ${DIM}MINER_ADDRESS${RESET}     0x...                     Block signing address
     ${DIM}LOG_LEVEL${RESET}         info                      Log level (trace/debug/info/warn/error)
     ${DIM}DATA_DIR${RESET}          ./node-data               Data directory
     ${DIM}PLOTS_DIR${RESET}         ./plots                   Plot directory
@@ -47,11 +46,11 @@ ${CYAN}      _                     _           _
   ${GREEN}EXAMPLES${RESET}
     node src/index.js
     PORT=3002 node src/index.js
-    MINING_ENABLED=true MINER_ADDRESS=0x... node src/index.js
   `);
   process.exit(0);
 }
 
 const cfg = loadConfig();
+if (cfg.nodeUrl) log('info', `public url: ${cfg.nodeUrl}`);
 const node = new ChocoNode(cfg);
 node.start();
