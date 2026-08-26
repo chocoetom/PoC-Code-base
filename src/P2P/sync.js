@@ -138,10 +138,6 @@ class SyncEngine {
             continue;
           }
           block._from_local_forge = false;
-          // REST-fetched blocks come from peers with their own state history,
-          // miner registry and difficulty history: state_root/signature/target
-          // recomputation is impossible cross-node. Hash, parent linkage,
-          // height sequence and timestamps stay enforced.
           const insertResult = await this.chain.addBlock(block, { skipStateValidation: true, skipContractStateValidation: true, skipSignature: true, skipTargetValidation: true });
           if (!insertResult.ok) { log('debug', `sync: block insert rejected at #${block.height}: ${insertResult.motivo}`); break; }
           inserted++;
