@@ -11,7 +11,6 @@ const { Chain } = chain;
 const challenge = require('./src/Blockchain/challenge');
 const { PeerManager } = require('./src/P2P/peers');
 const sync = require('./src/P2P/sync');
-const { Miner } = require('./src/miner');
 const plot = require('./src/plot');
 const { DiscoveryServer, connectDiscoveryServer } = require('./src/P2P/discovery');
 const { Server } = require('./src/server');
@@ -80,8 +79,6 @@ module.exports = {
   ChallengeManager,
   // Peers
   PeerManager,
-  // Miner
-  Miner,
   // Node
   ChocoNode, NodeRegistry, Server,
 };

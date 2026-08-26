@@ -24,7 +24,6 @@ const GROUPS = {
   node: { label: 'NODE', desc: 'Node lifecycle & status' },
   wallet: { label: 'WALLET', desc: 'Key management & transactions' },
   storage: { label: 'STORAGE', desc: 'Plot / PoC management' },
-  mining: { label: 'MINING', desc: 'Mining control & info' },
   chain: { label: 'CHAIN', desc: 'Blockchain queries' },
   config: { label: 'CONFIG', desc: 'Configuration management' },
   utils: { label: 'UTILS', desc: 'Cryptographic utilities' },
@@ -33,8 +32,6 @@ const GROUPS = {
 const COMMANDS = [
   { cmd: 'node:start', group: 'node', desc: 'Start a full node', args: [
     { name: '--port', desc: 'HTTP port (default: 3001)' },
-    { name: '--mining', desc: 'Enable mining' },
-    { name: '--miner-address', desc: 'Miner wallet address' },
     { name: '--storage-dirs', desc: 'plot dirs' },
   ]},
   { cmd: 'node:status', group: 'node', desc: 'Show node status from RPC', args: [
@@ -77,21 +74,6 @@ const COMMANDS = [
   ]},
   { cmd: 'storage:list', group: 'storage', desc: 'List committed plots', args: [
     { name: '--address', desc: 'Filter by miner address' },
-    { name: '--rpc', desc: 'RPC endpoint URL' },
-  ]},
-  { cmd: 'mining:start', group: 'mining', desc: 'Start mining for an address', args: [
-    { name: '--address', desc: 'Miner wallet address' },
-    { name: '--rpc', desc: 'RPC endpoint URL' },
-  ]},
-  { cmd: 'mining:stop', group: 'mining', desc: 'Stop mining', args: [
-    { name: '--address', desc: 'Miner wallet address' },
-    { name: '--rpc', desc: 'RPC endpoint URL' },
-  ]},
-  { cmd: 'mining:status', group: 'mining', desc: 'Show mining status', args: [
-    { name: '--address', desc: 'Miner wallet address' },
-    { name: '--rpc', desc: 'RPC endpoint URL' },
-  ]},
-  { cmd: 'mining:challenge', group: 'mining', desc: 'Show current mining challenge', args: [
     { name: '--rpc', desc: 'RPC endpoint URL' },
   ]},
   { cmd: 'chain:height', group: 'chain', desc: 'Current blockchain height', args: [
@@ -261,8 +243,6 @@ function printWallet(w, label) {
 async function cmdNodeStart(args) {
   const config = loadConfig();
   if (args.port) config.port = parseInt(args.port);
-  if (args.mining) config.miningEnabled = true;
-  if (args['miner-address']) config.minerAddress = args['miner-address'];
   if (args['storage-dirs']) config.plotsDir = args['storage-dirs'];
 
   const child = spawn(process.execPath, [require.resolve('./src/index.js')], {
@@ -272,13 +252,11 @@ async function cmdNodeStart(args) {
       ...process.env,
       PORT: String(config.port),
       PLOTS_DIR: config.plotsDir || '',
-      MINING_ENABLED: String(config.miningEnabled),
       MINER_ADDRESS: config.minerAddress || '',
     }
   });
 
   console.log(`\n  ${C.grn('Node started')} on port ${C.bold(config.port)}`);
-  if (config.miningEnabled) console.log(`  Mining: ${C.grn('enabled')} — ${config.minerAddress || C.red('no address')}`);
   child.on('exit', (code) => console.log(`\n  Node exited (code ${code})`));
 }
 
@@ -291,7 +269,6 @@ async function cmdNodeStatus(args) {
     console.log(`  ${C.dim('Hash:')}          ${(s.hash || '').slice(0, 20)}...`);
     console.log(`  ${C.dim('Chain Work:')}    ${s.chain_work || '0'}`);
     console.log(`  ${C.cyn('Peers:')}         ${s.peer_count || 0}`);
-    console.log(`  ${s.mining_active ? C.grn('Mining:') : C.dim('Mining:')}        ${s.mining_active ? C.grn('active') : C.dim('inactive')}`);
     console.log(`  ${C.ylw('Miner:')}         ${s.miner_address || 'none'}`);
     console.log(`  ${C.dim('Uptime:')}        ${(s.uptime || 0) + 's'}`);
   } catch (e) {
@@ -445,38 +422,6 @@ async function cmdStorageList(args) {
   } catch (e) { console.error(`  ${C.red('Error:')} ${e.message}`); }
 }
 
-async function cmdMiningStart(args) {
-  if (!args.address) { console.error(`  ${C.red('Need --address')}`); return; }
-  const res = await rpcCall(getRpcUrl(args), '/api/mining/start', { method: 'POST', body: { address: args.address } });
-  console.log(res.ok ? `  ${C.grn('Mining started')} for ${args.address}` : `  ${C.red('Failed:')} ${res.motivo || res.error}`);
-}
-
-async function cmdMiningStop(args) {
-  const res = await rpcCall(getRpcUrl(args), '/api/mining/stop', { method: 'POST', body: { address: args.address } });
-  console.log(res.ok ? `  ${C.grn('Mining stopped')}` : `  ${C.red('Failed:')} ${res.motivo || res.error}`);
-}
-
-async function cmdMiningStatus(args) {
-  try {
-    const url = getRpcUrl(args);
-    const res = await rpcCall(url, args.address ? `/api/mining/status?address=${args.address}` : '/api/mining/status');
-    console.log(`  Mining: ${res.mining ? C.grn('active') : C.dim('inactive')}`);
-    if (res.address) console.log(`  Address: ${res.address}`);
-    if (res.shares) console.log(`  Shares: ${res.shares}`);
-    if (res.total_scans) console.log(`  Scans: ${res.total_scans}`);
-  } catch (e) { console.error(`  ${C.red('Error:')} ${e.message}`); }
-}
-
-async function cmdMiningChallenge(args) {
-  try {
-    const res = await rpcCall(getRpcUrl(args), '/api/mining/challenge');
-    console.log(`  ${C.grn('Challenge ID:')}  ${res.challenge_id}`);
-    console.log(`  ${C.dim('Seed:')}          ${(res.challenge_seed || '').slice(0, 24)}...`);
-    console.log(`  ${C.cyn('Expires:')}       ${res.expires_at ? new Date(res.expires_at * 1000).toISOString() : '?'}`);
-    console.log(`  ${C.ylw('Target Scoop:')}  ${res.target_scoop_index}`);
-  } catch (e) { console.error(`  ${C.red('Error:')} ${e.message}`); }
-}
-
 async function cmdChainHeight(args) {
   try {
     const s = await rpcCall(getRpcUrl(args), '/api/node/status');
@@ -585,10 +530,6 @@ async function main() {
     'storage:generate': cmdStorageGenerate,
     'storage:commit': cmdStorageCommit,
     'storage:list': cmdStorageList,
-    'mining:start': cmdMiningStart,
-    'mining:stop': cmdMiningStop,
-    'mining:status': cmdMiningStatus,
-    'mining:challenge': cmdMiningChallenge,
     'chain:height': cmdChainHeight,
     'chain:block': cmdChainBlock,
     'chain:peers': cmdChainPeers,
