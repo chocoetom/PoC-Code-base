@@ -10,7 +10,6 @@ const { Chain } = require('./Blockchain/chain');
 const { ChallengeManager, getTier } = require('./Blockchain/challenge');
 const { PeerManager } = require('./P2P/peers');
 const { SyncEngine } = require('./P2P/sync');
-const { Miner } = require('./miner');
 const { Server } = require('./server');
 const { P2PWebSocketServer } = require('./P2P/p2p-ws');
 const { setupOptionalModules, loadOptionalModules } = require('./optional');
@@ -39,7 +38,6 @@ class ChocoNode {
     this.peers = null;
     this.challengeMgr = null;
     this.sync = null;
-    this.miner = null;
     this.server = null;
     this.p2pWsServer = null;
     this._stopDiscovery = null;
@@ -96,9 +94,8 @@ class ChocoNode {
     this.challengeMgr = new ChallengeManager(this.db, this.chain, cfg, this.optionalModules);
     this.registry = new NodeRegistry(this.db);
     this.sync = new SyncEngine(this.db, cfg, this.chain, this.peers, this.challengeMgr, this.NODE_ID);
-    this.miner = new Miner(this.db, cfg, this.chain, this.challengeMgr, this.sync, this.peers, this.NODE_ID);
 
-    this.server = new Server(cfg, this.db, this.chain, this.peers, this.sync, this.miner, this.challengeMgr, this.registry, this.NODE_ID, this.smartContracts, this.p2pWsServer);
+    this.server = new Server(cfg, this.db, this.chain, this.peers, this.sync, this.challengeMgr, this.registry, this.NODE_ID, this.smartContracts, this.p2pWsServer);
     this.server.start();
 
     if (cfg.p2pWsPort && cfg.p2pWsPort > 0) {
@@ -124,9 +121,6 @@ class ChocoNode {
         await this.sync.announce();
         await this.sync.announce();
       }
-      if (cfg.miningEnabled && cfg.minerAddress) {
-        setTimeout(() => this.miner.start(cfg.minerAddress), 3000);
-      }
     }, 2000);
 
     this._setupShutdown();
@@ -146,8 +140,7 @@ class ChocoNode {
       '| | | | |   | |  |   | . | . | -_| \n' +
       '|_|_|_|_|_|_|_|  |_|_|___|___|___|\x1b[0m');
     console.log('');
-    console.log(`  \x1b[2mPort: ${cfg.port}  |  Peers: ${cfg.seedPeers.length} seeds  |  Mining: ${cfg.miningEnabled ? '\x1b[32mON' : '\x1b[2mOFF'}\x1b[0m`);
-    if (cfg.nodeUrl) console.log(`  \x1b[2mURL: ${cfg.nodeUrl}\x1b[0m`);
+    console.log(`  \x1b[2mPort: ${cfg.port}  |  Peers: ${cfg.seedPeers.length} seeds\x1b[0m`);
     if (cfg.discoveryPort > 0) console.log(`  \x1b[2mDiscovery: WS on port ${cfg.discoveryPort}\x1b[0m`);
     if (cfg.discoveryUrl) console.log(`  \x1b[2mDiscovery client: ${cfg.discoveryUrl}\x1b[0m`);
     console.log('');
@@ -157,7 +150,6 @@ class ChocoNode {
     const shutdown = () => {
       if (this._stopDiscovery) this._stopDiscovery();
       log('info', 'Shutting down...');
-      this.miner.stop();
       try { this.db.close(); } catch {}
       if (this.server) this.server.stop();
       setTimeout(() => process.exit(0), 5000);

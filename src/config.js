@@ -14,7 +14,10 @@ try {
       const eq = trimmed.indexOf('=');
       if (eq < 1) continue;
       const k = trimmed.slice(0, eq).trim();
-      const v = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+      let v = trimmed.slice(eq + 1).trim();
+      const hash = v.indexOf(' #');
+      if (hash >= 0) v = v.slice(0, hash).trim();
+      v = v.replace(/^["']|["']$/g, '');
       if (k && !process.env[k]) process.env[k] = v;
     }
   }
@@ -35,7 +38,6 @@ function loadConfig() {
     heartbeatMs: 20000,
     discoveryMs: 30000,
     blockTimeTarget: 10,
-    miningEnabled: false,
     minerAddress: '',
     minerPrivateKey: '',
     minerPublicKey: '',
@@ -113,7 +115,6 @@ smartContractsEnabled: false,
   defaults.heartbeatMs = envInt('HEARTBEAT_MS', defaults.heartbeatMs);
   defaults.discoveryMs = envInt('DISCOVERY_MS', defaults.discoveryMs);
   defaults.blockTimeTarget = Math.max(10, envInt('BLOCK_TIME', defaults.blockTimeTarget));
-  defaults.miningEnabled = envBool('MINING_ENABLED', defaults.miningEnabled);
   defaults.minerAddress = envStr('MINER_ADDRESS', defaults.minerAddress);
   defaults.minerPrivateKey = envStr('MINER_PRIVATE_KEY', defaults.minerPrivateKey);
   defaults.minerPublicKey = envStr('MINER_PUBLIC_KEY', defaults.minerPublicKey);
@@ -132,12 +133,18 @@ smartContractsEnabled: false,
   defaults.p2pOfferTtlSec = envInt('P2P_OFFER_TTL_SEC', defaults.p2pOfferTtlSec);
   defaults.p2pWsPort = envInt('P2P_WS_PORT', defaults.p2pWsPort);
 
+  if (defaults.nodeUrl) {
+    const self = defaults.nodeUrl.toLowerCase();
+    const filtered = defaults.seedPeers.filter(u => u.toLowerCase() !== self);
+    if (filtered.length < defaults.seedPeers.length) defaults.seedPeers = filtered;
+  }
+
   return defaults;
 }
 
 function normalizeUrl(url) {
   if (!url || typeof url !== 'string') return null;
-  url = url.trim();
+  url = url.split(' #')[0].trim();
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     if (url.includes(':')) {
       const parts = url.split(':');
