@@ -16,7 +16,6 @@ class Chain {
     this.height = 0;
     this.bestHash = ZERO_HASH;
     this.contracts = null;
-    // Ensure optional columns exist before genesis/insert paths use them.
     try { this.db.prepare('ALTER TABLE transactions ADD COLUMN block_hash TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN base_target TEXT').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN contract_state_root TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
@@ -133,8 +132,6 @@ class Chain {
       bloco.transactions = this.db.prepare('SELECT * FROM transactions WHERE block_hash = ? ORDER BY rowid').all(bloco.hash);
     }
     if (bloco) {
-      // Hydrate fields that are not plain columns so that served/reloaded blocks
-      // hash identically to the originals (hashBlock covers rewards & winner_proof).
       if (!Array.isArray(bloco.rewards)) {
         try { bloco.rewards = bloco.rewards_json ? JSON.parse(bloco.rewards_json) : []; } catch { bloco.rewards = []; }
         if (!Array.isArray(bloco.rewards)) bloco.rewards = [];
@@ -225,8 +222,6 @@ class Chain {
       }
     } catch {}
     if (candidates < 1n) {
-      // Fallback: assume a small network instead of a huge fixed constant.
-      // This makes initial mining feasible on dev/testnet.
       const fallbackSizeGb = Math.max(1, Number(this.cfg.initialPlotGb || 10));
       const total = plotScoopCount(fallbackSizeGb);
       candidates = BigInt(Math.max(1, Math.ceil(total / MINING_SCOOP_MODULUS)));
@@ -250,8 +245,6 @@ class Chain {
           const grandParent = this.db.prepare('SELECT timestamp FROM blocks WHERE height = ?').get(Math.max(0, height - 2));
           if (grandParent) {
             const actualDelta = Math.max(1, parentTime - grandParent.timestamp);
-            // deadline ∝ quality/base_target: slow blocks need a HIGHER base
-            // target to shorten future deadlines (Burst semantics).
             const ratio = BigInt(Math.floor((actualDelta * 1000) / Math.max(1, expectedTime)));
             let newTarget = (prevTarget * ratio) / 1000n;
             if (newTarget > prevTarget * 2n) newTarget = prevTarget * 2n;
@@ -261,7 +254,6 @@ class Chain {
           }
         }
       }
-      // Fallback to copying previous if bootstrap adjustment not applicable
       const prev = this.db.prepare('SELECT base_target FROM blocks WHERE height = ?').get(height - 1);
       return (prev && prev.base_target) ? prev.base_target : this._defaultBaseTarget();
     }
@@ -340,7 +332,6 @@ class Chain {
       if (!bloco.base_target) bloco.base_target = String(expectedBaseTarget);
     }
     const txs = bloco.transactions || [];
-    // Always validate balances, even if skipTxValidation is true
     const [balanceOk, balanceMotivo] = this._validateTxBalances(txs);
     if (!balanceOk) return { ok: false, motivo: balanceMotivo };
     if (!skipTxValidation) {
@@ -353,9 +344,6 @@ class Chain {
       if (!bloco.signature) return { ok: false, motivo: 'block not signed' };
       let signerPubKey = null;
       if (bloco.miner_public_key) {
-        // Preferred: the forging node signs with its own key while crediting the
-        // network winner in block.miner. The carried key identifies the SIGNER,
-        // not the winner — validity is decided by the signature check below.
         try { pubkeyToAddress(bloco.miner_public_key); } catch { return { ok: false, motivo: 'invalid miner_public_key encoding' }; }
         signerPubKey = bloco.miner_public_key;
       }
@@ -372,8 +360,6 @@ class Chain {
           if (wpMiner !== bloco.miner) {
             return { ok: false, motivo: 'winner_proof.miner does not match block.miner' };
           }
-          // The winner's proof signature is always verified against the pubkey
-          // registered for the winner address (never the block signer's key).
           const wpPk = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE lower(address) = lower(?)').get(wpMiner);
           if (!wpPk || !wpPk.public_key_ed25519) {
             return { ok: false, motivo: 'winner_proof miner has no public key' };
@@ -432,7 +418,6 @@ class Chain {
       }
     }
 
-    // Wait for state trie load if it hasn't completed yet
     if (this.stateTrieLoadPromise) await this.stateTrieLoadPromise;
 
     try {
