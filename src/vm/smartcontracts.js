@@ -538,6 +538,7 @@ async function getAccountBalance(address, inVmOfContract) {
   return account.balance;
 }
 
+// export
 module.exports = {
   setDatabase, clearVmCache, CreateSmartContract, runSmartContract, getSmartContract, listSmartContracts,
   getVm, loadAllContractState, saveContractStorage, loadContractStorage,
