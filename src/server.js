@@ -148,6 +148,7 @@ class Server {
       });
     });
 
+// USE THIS ENDPOINT FOR STATS (its better)
 app.get('/api/state', (req, res) => {
   const running = !!this.chain;
   const config = this.cfg;
