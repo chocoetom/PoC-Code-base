@@ -179,8 +179,6 @@
     $('btnStop').classList.toggle('hidden', !state.running);
     $('statHeight').textContent = h && h.height != null ? h.height : '—';
     $('statPeers').textContent = h ? (h.peers != null ? h.peers : '—') : '—';
-    const mining = state.node.mining;
-    $('statMining').textContent = mining && mining.active ? 'ON' : (state.config && state.config.miningEnabled ? 'PENDING' : 'OFF');
     $('statUptime').textContent = h ? fmtDur(h.uptime) : '—';
 
     // network storage (local + peers)
@@ -498,15 +496,6 @@
   }
 
   function renderMining() {
-    const mining = state.node.mining || {};
-    const on = !!(state.config && state.config.miningEnabled);
-    $('miningSwitch').checked = on;
-    $('miningEm').textContent = mining.active ? 'active' : (on ? 'waiting' : 'off');
-    $('mStatus').textContent = mining.active ? 'ACTIVE' : (mining.active === false ? 'stopped' : '—');
-    $('mAddr').textContent = (state.config && state.config.minerAddress) ? trunc(state.config.minerAddress, 14) : '—';
-    $('mDeadline').textContent = mining.best_deadline != null ? mining.best_deadline + 's' : '—';
-    $('mShares').textContent = mining.shares != null ? mining.shares : '—';
-    $('mRewards').textContent = mining.rewards != null ? fmtCC(mining.rewards) : '—';
     $('minerStatus').textContent = '';
     $('minerStatus').className = 'hint';
     if ((state.config && state.config.minerAddress) && !state.minerUnlocked) {
@@ -594,20 +583,6 @@
     } catch (e) {
       toast(e.message, 'err');
     }
-  });
-
-  $('miningSwitch').addEventListener('change', async (e) => {
-    const on = e.target.checked;
-    const addr = (state.config && state.config.minerAddress) || '';
-    if (on && !addr) { e.target.checked = false; toast('Select a miner wallet first', 'err'); return; }
-    try {
-      await api('/api/node/settings', { body: { miningEnabled: on } });
-      if (state.running) {
-        if (on) await api('/api/mining/start', { body: { address: addr } });
-        else await api('/api/mining/stop', { body: {} });
-      }
-      toast(on ? 'Mining enabled' : 'Mining disabled');
-    } catch (err) { toast(err.message, 'err'); }
   });
 
   /* ---------------- plots ---------------- */

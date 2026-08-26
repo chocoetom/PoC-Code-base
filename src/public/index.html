@@ -39,7 +39,7 @@
     <button class="tab" data-tab="blocks">Blocks</button>
     <button class="tab" data-tab="mempool">Mempool</button>
     <button class="tab" data-tab="wallet">Wallet</button>
-    <button class="tab" data-tab="mining">Mining</button>
+    <button class="tab" data-tab="mining">Plots</button>
     <button class="tab" data-tab="config">Config</button>
     <button class="tab" data-tab="logs">Logs</button>
   </nav>
@@ -63,7 +63,6 @@
     <div class="stats-row">
       <div class="card stat-card"><span class="stat-label">PEERS</span><b id="statPeers">—</b></div>
       <div class="card stat-card" id="netStorageCard"><span class="stat-label">NETWORK STORAGE</span><b id="statNetStorage">—</b><span id="statNetStorageSub" class="stat-sub">local + peers</span></div>
-      <div class="card stat-card"><span class="stat-label">MINING</span><b id="statMining">—</b></div>
       <div class="card stat-card"><span class="stat-label">UPTIME</span><b id="statUptime">—</b></div>
     </div>
     <div class="card">
@@ -206,20 +205,6 @@
           <button class="btn btn-ghost" id="btnImportWallet">Import</button>
         </div>
         <div id="minerStatus" class="hint"></div>
-      </div>
-      <div class="card">
-        <h3>Mining</h3>
-        <p class="card-desc">Proof of Capacity — create plots, then enable the miner.</p>
-        <label class="toggle-row">
-          <input type="checkbox" id="miningSwitch">
-          <span class="toggle"></span>
-          <span><b>Mining enabled</b> <em id="miningEm">off</em></span>
-        </label>
-        <div class="kv"><span>Status</span><span id="mStatus" class="mono">—</span></div>
-        <div class="kv"><span>Address</span><span id="mAddr" class="mono">—</span></div>
-        <div class="kv"><span>Best deadline</span><span id="mDeadline" class="mono">—</span></div>
-        <div class="kv"><span>Shares</span><span id="mShares" class="mono">—</span></div>
-        <div class="kv"><span>Rewards (CC)</span><span id="mRewards" class="mono">—</span></div>
       </div>
       <div class="card">
         <h3>Plots (PoC)</h3>
