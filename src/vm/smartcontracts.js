@@ -20,7 +20,6 @@ function patchLevelWsDoubleClose() {
       return originalEmit.call(this, eventName, ...args);
     };
   } catch (e) {
-    // noop
   }
 }
 
@@ -31,11 +30,10 @@ const initialSmartContractGasPrice = GAS_PARAMS.initialSmartContractGasPrice;
 
 const InitialSmartContractGasPriceHumanReadable = (initialSmartContractGasPrice / 10 ** 9).toString() + ' Gwei';
 
-const MAX_CONTRACT_CODE_SIZE = 24576; // 24 KB
+const MAX_CONTRACT_CODE_SIZE = 24576;
 
 let db = null;
 
-// ==== LRU cache for VMs to prevent unbounded growth and avoid full clears ====
 class LRUCache {
   constructor(maxSize = 100) {
     this.maxSize = maxSize;
@@ -45,7 +43,6 @@ class LRUCache {
   get(key) {
     if (!this.map.has(key)) return undefined;
     const value = this.map.get(key);
-    // refresh key order
     this.map.delete(key);
     this.map.set(key, value);
     return value;
@@ -55,7 +52,6 @@ class LRUCache {
     if (this.map.has(key)) {
       this.map.delete(key);
     } else if (this.map.size >= this.maxSize) {
-      // evict oldest entry (first inserted)
       const oldestKey = this.map.keys().next().value;
       this.map.delete(oldestKey);
     }
@@ -85,8 +81,6 @@ function setDatabase(database) {
 }
 
 function clearVmCache() {
-  // Do not clear VM instances – they are reusable across blocks.
-  // Clear only slot metadata and storage TTLs to force a fresh reload of storage.
   knownSlots.clear();
   storageLoadTimestamps.clear();
 }
