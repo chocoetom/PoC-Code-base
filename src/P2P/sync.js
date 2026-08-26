@@ -62,7 +62,9 @@ class SyncEngine {
         log('info', `[P2P] Discovered peers from ${url}: ${data && Array.isArray(data.peers) ? data.peers.length + ' peers' : data}`);
         if (data && Array.isArray(data.peers) && data.peers.length > 0) {
           for (const p of data.peers) {
-            if (p.url) this.peers.add(p.url);
+            if (!p.url) continue;
+            try { const pu = new (require('url').URL)(p.url); if (selfHost && pu.hostname === selfHost) continue; } catch { continue; }
+            this.peers.add(p.url);
           }
         }
       } catch {
@@ -136,7 +138,11 @@ class SyncEngine {
             continue;
           }
           block._from_local_forge = false;
-          const insertResult = await this.chain._insertBlockDirect(block);
+          // REST-fetched blocks come from peers with their own state history,
+          // miner registry and difficulty history: state_root/signature/target
+          // recomputation is impossible cross-node. Hash, parent linkage,
+          // height sequence and timestamps stay enforced.
+          const insertResult = await this.chain.addBlock(block, { skipStateValidation: true, skipContractStateValidation: true, skipSignature: true, skipTargetValidation: true });
           if (!insertResult.ok) { log('debug', `sync: block insert rejected at #${block.height}: ${insertResult.motivo}`); break; }
           inserted++;
           from = block.height + 1;
