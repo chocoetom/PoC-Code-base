@@ -185,9 +185,6 @@ function initDB(dbPath, cfg) {
   } catch (e) { /* duplicates present, skipped */ }
 
   try { db.prepare('ALTER TABLE blocks ADD COLUMN winner_proof TEXT DEFAULT ""').run(); } catch {}
-  // Snapshot of network base_target at challenge creation. Deadlines are
-  // validated against this value so live bt drift (plot registrations,
-  // difficulty adjustments) cannot invalidate in-flight proofs.
   try { db.prepare('ALTER TABLE mining_challenges ADD COLUMN base_target TEXT').run(); } catch {}
   try { db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch {}
   try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN total_scoops INTEGER DEFAULT 0').run(); } catch {}
@@ -209,8 +206,6 @@ function initDB(dbPath, cfg) {
     }
   } catch (e) { /* migration may have already run */ }
 
-  // Fair launch: no premine. Total supply starts at 0 and grows only via
-  // block rewards (see calculateMiningReward), capped by cfg.maxSupply.
   const treasuryAddress = '0xcc' + '0'.repeat(40);
   const existingTreasury = db.prepare('SELECT balance FROM users WHERE address = ?').get(treasuryAddress);
   if (!existingTreasury) {
