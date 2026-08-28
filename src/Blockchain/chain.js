@@ -1,4 +1,4 @@
-const { ZERO_HASH, sha256hex, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRoot, computeStateRootAfterTxs, computeContractStateRoot, verifySignature, calculateMiningReward, isBetterChainCandidate, canonicalTxMessage, blockMessage, signMessage, proofMessage, plotScoopCount, MINING_SCOOP_MODULUS, pubkeyToAddress } = require('../crypto');
+const { ZERO_HASH, sha256hex, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRoot, computeStateRootAfterTxs, computeContractStateRoot, verifySignature, calculateMiningReward, isBetterChainCandidate, canonicalTxMessage, blockMessage, signMessage, proofMessage, plotScoopCount, MINING_SCOOP_MODULUS, pubkeyToAddress, recoverTransactionSender } = require('../crypto');
 const { IncrementalStateRoot } = require('./state-trie');
 const { hashBlockAsync, verifySignatureAsync, canonicalTxMessageAsync } = require('../worker-pool');
 const { estimateIntrinsicGas, nextBaseFee, GAS_PARAMS } = require('../consensus/gas');
@@ -16,6 +16,7 @@ class Chain {
     this.height = 0;
     this.bestHash = ZERO_HASH;
     this.contracts = null;
+    // Ensure optional columns exist before genesis/insert paths use them.
     try { this.db.prepare('ALTER TABLE transactions ADD COLUMN block_hash TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN base_target TEXT').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN contract_state_root TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
@@ -132,6 +133,8 @@ class Chain {
       bloco.transactions = this.db.prepare('SELECT * FROM transactions WHERE block_hash = ? ORDER BY rowid').all(bloco.hash);
     }
     if (bloco) {
+      // Hydrate fields that are not plain columns so that served/reloaded blocks
+      // hash identically to the originals (hashBlock covers rewards & winner_proof).
       if (!Array.isArray(bloco.rewards)) {
         try { bloco.rewards = bloco.rewards_json ? JSON.parse(bloco.rewards_json) : []; } catch { bloco.rewards = []; }
         if (!Array.isArray(bloco.rewards)) bloco.rewards = [];
@@ -222,6 +225,8 @@ class Chain {
       }
     } catch {}
     if (candidates < 1n) {
+      // Fallback: assume a small network instead of a huge fixed constant.
+      // This makes initial mining feasible on dev/testnet.
       const fallbackSizeGb = Math.max(1, Number(this.cfg.initialPlotGb || 10));
       const total = plotScoopCount(fallbackSizeGb);
       candidates = BigInt(Math.max(1, Math.ceil(total / MINING_SCOOP_MODULUS)));
@@ -245,6 +250,8 @@ class Chain {
           const grandParent = this.db.prepare('SELECT timestamp FROM blocks WHERE height = ?').get(Math.max(0, height - 2));
           if (grandParent) {
             const actualDelta = Math.max(1, parentTime - grandParent.timestamp);
+            // deadline ∝ quality/base_target: slow blocks need a HIGHER base
+            // target to shorten future deadlines (Burst semantics).
             const ratio = BigInt(Math.floor((actualDelta * 1000) / Math.max(1, expectedTime)));
             let newTarget = (prevTarget * ratio) / 1000n;
             if (newTarget > prevTarget * 2n) newTarget = prevTarget * 2n;
@@ -254,6 +261,7 @@ class Chain {
           }
         }
       }
+      // Fallback to copying previous if bootstrap adjustment not applicable
       const prev = this.db.prepare('SELECT base_target FROM blocks WHERE height = ?').get(height - 1);
       return (prev && prev.base_target) ? prev.base_target : this._defaultBaseTarget();
     }
@@ -332,6 +340,7 @@ class Chain {
       if (!bloco.base_target) bloco.base_target = String(expectedBaseTarget);
     }
     const txs = bloco.transactions || [];
+    // Always validate balances, even if skipTxValidation is true
     const [balanceOk, balanceMotivo] = this._validateTxBalances(txs);
     if (!balanceOk) return { ok: false, motivo: balanceMotivo };
     if (!skipTxValidation) {
@@ -344,12 +353,15 @@ class Chain {
       if (!bloco.signature) return { ok: false, motivo: 'block not signed' };
       let signerPubKey = null;
       if (bloco.miner_public_key) {
+        // Preferred: the forging node signs with its own key while crediting the
+        // network winner in block.miner. The carried key identifies the SIGNER,
+        // not the winner — validity is decided by the signature check below.
         try { pubkeyToAddress(bloco.miner_public_key); } catch { return { ok: false, motivo: 'invalid miner_public_key encoding' }; }
         signerPubKey = bloco.miner_public_key;
       }
       if (!signerPubKey) {
-        const pkRow = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE address = ?').get(bloco.miner);
-        if (pkRow && pkRow.public_key_ed25519) signerPubKey = pkRow.public_key_ed25519;
+        const pkRow = this.db.prepare('SELECT public_key_secp256k1 FROM users WHERE address = ?').get(bloco.miner);
+        if (pkRow && pkRow.public_key_secp256k1) signerPubKey = pkRow.public_key_secp256k1;
       }
       if (!signerPubKey) return { ok: false, motivo: 'miner not registered or no key' };
       if (!verifySignature(blockMessage(bloco), bloco.signature, signerPubKey)) return { ok: false, motivo: 'invalid block signature' };
@@ -360,12 +372,14 @@ class Chain {
           if (wpMiner !== bloco.miner) {
             return { ok: false, motivo: 'winner_proof.miner does not match block.miner' };
           }
-          const wpPk = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE lower(address) = lower(?)').get(wpMiner);
-          if (!wpPk || !wpPk.public_key_ed25519) {
+          // The winner's proof signature is always verified against the pubkey
+          // registered for the winner address (never the block signer's key).
+          const wpPk = this.db.prepare('SELECT public_key_secp256k1 FROM users WHERE lower(address) = lower(?)').get(wpMiner);
+          if (!wpPk || !wpPk.public_key_secp256k1) {
             return { ok: false, motivo: 'winner_proof miner has no public key' };
           }
           const wpMsg = proofMessage(bloco.challenge_id, wpMiner, wp.deadline, wp.plot_id);
-        const wpSigValid = await verifySignatureAsync(wpMsg, wp.proof_signature, wpPk.public_key_ed25519);
+        const wpSigValid = await verifySignatureAsync(wpMsg, wp.proof_signature, wpPk.public_key_secp256k1);
         if (!wpSigValid) {
           return { ok: false, motivo: 'invalid winner_proof signature — miner did not submit this proof' };
         }
@@ -418,6 +432,7 @@ class Chain {
       }
     }
 
+    // Wait for state trie load if it hasn't completed yet
     if (this.stateTrieLoadPromise) await this.stateTrieLoadPromise;
 
     try {
@@ -768,17 +783,17 @@ class Chain {
         projectedBalance[sender] = user ? safeBigInt(user.balance, 0n) : 0n;
       }
       if (safeInt(tx.nonce, -1) < 0 || safeInt(tx.value, -1) < 0) return [false, `invalid tx values for ${sender}`];
-      if (safeInt(tx.nonce, 0) !== projectedNonce[sender]) return [false, 'transactions not ordered by nonce'];
+      if (safeInt(tx.nonce, 0) < projectedNonce[sender]) return [false, 'transactions not ordered by nonce'];
       if (projectedBalance[sender] < safeBigInt(tx.value, 0n) + safeBigInt(tx.fee, 0n)) return [false, `insufficient balance for ${sender}`];
       const sig = tx.signature || '';
       if (!sig) return [false, `missing signature from ${sender}`];
-      const pubkey = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE address = ?').get(sender);
-      if (!pubkey || !pubkey.public_key_ed25519) return [false, `sender ${sender} has no public key`];
+      const recovered = recoverTransactionSender(tx);
+      if (!recovered) return [false, `invalid signature from ${sender}`];
+      if (recovered !== sender.toLowerCase()) return [false, `recovered sender ${recovered} does not match ${sender}`];
       const msg = canonicalTxMessage(tx);
-      const sigValid = verifySignature(msg, sig, pubkey.public_key_ed25519);
-      if (!sigValid) return [false, `invalid tx signature from ${sender}`];
+      void msg;
       projectedBalance[sender] -= safeBigInt(tx.value, 0n) + safeBigInt(tx.fee, 0n);
-      projectedNonce[sender]++;
+      projectedNonce[sender] = Math.max(projectedNonce[sender] + 1, safeInt(tx.nonce, 0) + 1);
     }
     return [true, ''];
   }
@@ -814,16 +829,14 @@ class Chain {
     const sender = tx.from_addr;
     if (!sender) return { ok: false, motivo: 'missing from_addr' };
     if (!tx.to_addr && !tx.data) return { ok: false, motivo: 'missing to_addr (or data for contract creation)' };
-    if (tx.to_addr && !/^0x[0-9a-fA-F]{42}$/.test(tx.to_addr)) return { ok: false, motivo: 'invalid to_addr' };
+    if (tx.to_addr && !/^0x[0-9a-fA-F]{40}$/.test(tx.to_addr)) return { ok: false, motivo: 'invalid to_addr' };
     if (tx.data && !/^0x[0-9a-fA-F]*$/.test(tx.data)) return { ok: false, motivo: 'invalid data' };
     if (safeInt(tx.nonce, -1) < 0 || safeInt(tx.value, -1) < 0) return { ok: false, motivo: 'invalid nonce/value' };
     const sig = tx.signature || '';
     if (!sig) return { ok: false, motivo: `missing signature from ${sender}` };
-    const pubkey = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE lower(address) = lower(?)').get(sender);
-    if (!pubkey || !pubkey.public_key_ed25519) return { ok: false, motivo: `sender ${sender} has no public key registered` };
-    const msg = canonicalTxMessage(tx);
-    const sigValid = await verifySignatureAsync(msg, sig, pubkey.public_key_ed25519);
-    if (!sigValid) return { ok: false, motivo: `invalid tx signature from ${sender}` };
+    const recovered = recoverTransactionSender(tx);
+    if (!recovered) return { ok: false, motivo: `invalid signature from ${sender}` };
+    if (recovered !== sender.toLowerCase()) return { ok: false, motivo: `recovered sender ${recovered} does not match from_addr` };
     const user = this.db.prepare('SELECT balance, nonce FROM users WHERE lower(address) = lower(?)').get(sender);
     const curNonce = user ? safeInt(user.nonce, 0) : 0;
     const curBalance = user ? safeBigInt(user.balance, 0n) : 0n;
