@@ -1,6 +1,6 @@
 # CCpoc
 
-**A Peer-to-Peer Decentralized Proof Of Capacity network, built with ethereum EVM**
+**A peer-to-peer, decentralized Proof-of-Capacity network, with a native Ethereum-compatible EVM.**
 
 Version 1.0
 
@@ -8,129 +8,115 @@ Version 1.0
 
 ## Abstract
 
-CCPoC is an independent permissionless blockchain, focused on turning old hardware in a way to mine with sustentability, for a more eco world 🌱
+CCpoc is an independent, permissionless blockchain, focused on turning old hardware into something useful — mining, sustainably, for a more eco-conscious world 🌱
 
-The whole point of that trade is **accessibility**. CCpoc is built for ordinary hardware — and, above all, for the small, low-power, and already-retired devices that other storage networks simply ignore. Where competitors demand big minimums (Chia's ~101.4 GiB `k32` plots, Storj's multi-hundred-gigabyte nodes), CCpoc lets you in starting from essentially zero capacity. A device nobody wants anymore can find a real second life here instead of becoming e-waste.
+CCpoc is built for ordinary hardware, and specifically for small, low-power, already-retired devices that other storage networks simply ignore, or gate behind high minimums most people can't meet. CCpoc lets you start mining with *essentially zero* capacity, turning e-waste into a real crypto miner.
 
-On top of that same network sits a complete **Ethereum-compatible virtual machine**. Anyone can deploy and run Solidity smart contracts, hold the network's native currency (CC), and use decentralized applications — all on a chain secured by proof-of-capacity, not proof-of-work.
+CCpoc isn't just another storage coin. It lets you create your own tokens and contracts through a built-in **Ethereum-compatible EVM**: anyone can deploy and run Solidity contracts, hold a native currency, and use decentralized applications — all secured by Proof-of-Capacity, without the energy and hardware intensity of Proof-of-Work.
 
-CC starts from a **fair launch**: the total supply begins at zero, grows only through block rewards across recurring halvings, and creeps toward a hard cap. There's no pre-mine, no founder stash, no investor allocation.
+CC starts from a **fair launch**: total supply begins at zero, grows only through block rewards across recurring halvings, and creeps toward a hard cap. No pre-mine, no founder stash, no investor allocation.
 
 ---
 
-## 1. Introduction
+## 1. Why storage, not work
 
-Digital payment systems and decentralized networks almost always secure themselves the same way, with proof-of-work: to win the right to extend the ledger you grind away computationally until one of your hashes lands below a target. It works, but it comes with real costs:
+Most chains secure themselves by burning electricity: miners race to compute hashes until one falls below a target, and whoever gets there first wins the block. It works, but it comes with real costs — constant power draw, an arms race toward specialized ASICs that only a few can afford, and hardware that's obsolete (and often trashed) within a couple of years.
 
-- **It eats electricity.** Security is bought one joule at a time. The bigger the network, the more power it burns continuously.
-- **It rewards the well-funded.** The fast way to mine is to build expensive, specialized hardware, which puts the power in the hands of whoever can afford it.
-- **It produces e-waste and heat.** Dedicated mining rigs have a short useful life and leave a long footprint behind.
+Proof-of-Capacity flips that. Instead of burning cycles, you set aside disk space — a "plot" — once, and from then on you just check a small slice of it against each new challenge. The cost of securing the network becomes the space you've already committed, plus a tiny bit of energy to read it. No arms race, no constant burn.
 
-Proof-of-capacity (PoC) takes a different route: instead of "work," it asks for "storage you've already set aside." A miner prepares a plot once, a large file of pseudorandom data, and then, for every new block, only checks a sliver of it against the challenge. The cost of keeping the network safe becomes the opportunity cost of the occupied disk plus the modest energy to scan it, not a continuous burn of electricity.
+### 1.1 The problem with high minimums
 
-### 1.1 The problem of high entry minimums and e-waste
+Here's the thing: most storage-based networks still gatekeep. Chia needs at least a ~101.4 GiB `k32` plot to participate. Storj-style networks typically expect nodes provisioned in the hundreds of gigabytes to multiple terabytes, plus steady bandwidth and uptime — numbers that quietly rule out anything small, old, or intermittently connected.
 
-CCpoc exists for one specific reason: the leading storage networks set **entry minimums that lock the low end of the hardware market out**:
+That's exactly the hardware sitting unused in most households and landfills: an old laptop's internal drive, a small SBC with a spare SSD attached, a retired external drive nobody plugs in anymore. Not broken — just below the bar everyone else has set.
 
-- **Chia** requires proofs of space in plots of at least `k32` = **≈ 101.4 GiB**. To participate, you have to pledge over 100 GB of disk per plot.
-- **Storj** and similar storage-service networks want nodes in the **hundreds of gigabytes** (a common floor is 400 GB or more), plus uptime and bandwidth commitments that a small device just can't meet.
+CCpoc doesn't set that bar. A scoop is 32 bytes, and capacity is accepted from essentially zero — no mandatory plot size, no minimum-node requirement. Because effective capacity is tiered and rooted (Section 3.4), even a genuinely tiny plot earns a real, if modest, share of rewards proportional to what the device can actually offer.
 
-Those thresholds quietly leave out the small, low-power, already-decommissioned hardware filling ordinary homes and e-waste streams: an old laptop's humble internal drive, a used mini-board with a disk bolted on, a retired little SSD. Each year these devices get thrown away not because they're broken, but because modern software has outgrown them — and, in the case of the storage networks, because they fall below a capacity gate. The result is a steadily growing pile of **electronic waste** whose computing and storage are perfectly fine for light, steady work.
+That's the whole point: give hardware that would otherwise be scrapped a second life as an active network participant, instead of adding to the pile of e-waste — while still keeping the chain properly secured. A plot is generated once and keeps earning for years. Cheap, commodity storage means a lower bar to entry and a broader, more egalitarian mining base.
 
-CCpoc deliberately has **no such floor**:
-
-- A scoop is a **32-byte unit**, and capacity is welcome starting from essentially **zero**. The smallest tier kicks in the moment a plot holds even a single scoop's worth of space. There's no mandatory `k`-size plot and no "you must own this much disk" requirement for joining.
-- Because effective capacity is rooted and tiered (Section 3.4), even a genuinely tiny plot earns a real share of rewards — modest, sure, but real, and proportional to what the device can honestly offer.
-
-That's the heart of the project: turn devices that would otherwise be scrapped into **working members** of a permissionless ledger. Old and modest hardware gets a useful second life, the e-waste tide slows down a little — and in return you get a usable, working chain. You generate a plot once, and the same space keeps serving the network for years. Storage is cheap, everyday hardware, so the door is wide open and the mining base can be broad and personal rather than a handful of giants.
-
-Building a blockchain on proofs of space is, admittedly, trickier to get right than one on proofs of work. You have to be careful about how a challenge is derived, how a winner is chosen, how rewards are split, and how everyone reaches agreement — otherwise you end up vulnerable to grinding, monopolies, and a single winner walking away with everything. The rest of this document walks through how CCpoc answers those questions: a challenge chain drawn from the block history, a capacity-based difficulty target, tiered effective capacity to push back against concentration, and a reward scheme that pays out across many miners in a single block.
+Building security purely on proof-of-space takes more care than proof-of-work, though. How the challenge is derived, how a winner gets picked, how rewards are split, how consensus is reached — all of it has to resist grinding, gaming, and single-winner capture. The rest of this document walks through how CCpoc handles each of those.
 
 ---
 
 ## 2. Transactions
 
-A transaction is the fundamental unit of value transfer. As in Ethereum-style systems, an account is an address derived from a public key on the secp256k1 curve, and each transaction carries:
+A transaction moves value from one account to another. Like Ethereum, an account here is just an address derived from a secp256k1 public key, and every transaction carries:
 
-- **To / from** — who's sending and who's receiving.
-- **Value** — how much CC moves.
-- **Nonce** — a per-account counter that keeps transactions in order and blocks replay attacks.
-- **Gas parameters** — every transaction consumes gas proportional to the work it does; gas is bought at a price (paid in CC), and a simple transfer costs 21,000 gas.
-- **Signature** — the sender signs with their private key. Because the signatures are recoverable (ECDSA over secp256k1, encoded as `v, r, s`), the sender's address can be pulled straight from the signature — no separate key registry needed — and any node can verify both who sent it and that it was authorized.
+- **To / from** — sender and recipient.
+- **Value** — the amount of CC being sent.
+- **Nonce** — a per-account counter, ordering transactions and blocking replay.
+- **Gas** — a plain transfer costs 21,000 gas intrinsic, paid in CC at whatever the current gas price is.
+- **Signature** — recoverable ECDSA over secp256k1 (`v, r, s`). Because the signature itself yields the public key, any node can verify who sent it and that it's authorized, with no separate key registry needed.
 
-A block holds an ordered list of transactions. Before any transaction is applied, it's checked against the current state: the sender must exist, must have enough balance to cover the value plus the fee, and the nonce must match the expected next one. On acceptance, the sender is debited, the recipient is credited, and the fee is collected. Those changes update the account state, and a root commitment of that state goes into the block header (Section 5).
+Each transaction is checked against current state before it's applied: the sender needs to exist, needs enough balance to cover value plus fee, and the nonce has to match what's expected next. Once accepted, balances update and the fee is collected — and that new state gets rolled into the block's state root (Section 5).
 
 ---
 
 ## 3. Consensus — Proof-of-Capacity
 
-CCpoc secures its ledger with proof-of-capacity: miners prove they've set aside a real, measurable amount of disk space in exchange for the right to forge blocks.
-
 ### 3.1 Plots and scoops
 
-To join, a miner first generates a **plot**: a file of pseudorandom 32-byte units called *scoops*, organized into *nonces* of 8,192 scoops each. Generating a plot is a one-time, parallelizable write that fills the reserved space with data derived from the miner's keys. After that the plot sits still: it can be rescanned against every new challenge without ever being regenerated.
-
-The number of scoops in a plot is simply how many 32-byte units it holds:
+To mine, you generate a **plot** once: a file of pseudorandom 32-byte units called scoops, grouped into nonces of 8,192 scoops each. It's a one-time, parallelizable write — after that, the plot just sits there and gets rescanned for every new challenge.
 
 ```
 scoops(plot) = floor(size_bytes / 32)
 ```
 
-The amount of space a miner commits to the network is their advertised capacity, in gigabytes.
+The capacity you commit to the network is simply how many gigabytes that plot holds.
 
 ### 3.2 Challenge and deadline
 
-The network doesn't hand out random challenges; it derives them deterministically from the chain's own history, so nobody controls when a challenge comes or what it looks like.
+Challenges aren't random — they're derived deterministically from the chain's own history, so nobody controls their timing or content:
 
-1. From the block at the head of the chain, the network computes a **generation signature** (`genSig`).
-2. The challenge identifier is `challenge_id = sha256(genSig ‖ tip_hash)`.
-3. A **target scoop index** is derived from `sha256(genSig)` modulo the scoop modulus.
-4. Every miner reads the target scoop at that index and hashes it against the generation signature to get a *quality*:
+1. From the block at the tip, the network computes a **generation signature** (`genSig`).
+2. `challenge_id = sha256(genSig ‖ tip_hash)`.
+3. A target scoop index is derived from `sha256(genSig)` modulo the scoop modulus.
+4. For each plot, the miner reads that scoop and hashes it against `genSig` to get a **quality**:
 
 ```
 quality = sha256(scoop_data ‖ genSig)      # first 8 bytes, big-endian
 deadline = quality ÷ base_target
 ```
 
-The **deadline** is the expected number of seconds before the winner would be revealed if the challenge carried on. It's clamped to a fixed interval. The miner with the **lowest deadline** for the current challenge gets to forge the next block.
+The **deadline** is, roughly, how many seconds it'd take for that plot to "win" the challenge — clamped to a fixed range. Lowest deadline forges the next block.
 
-Because the challenge comes from the chain itself and the target scoop is a hash of the generation signature, no miner can predict or nudge the challenge in advance. There's no way to grind a favorable one into existence.
+Because the challenge comes from the chain itself and the target scoop is derived from a hash nobody controls, there's no way to grind for a favorable challenge in advance.
 
 ### 3.3 Difficulty and capacity targeting
 
-`base_target` is what turns raw deadline numbers into a predictable rate of blocks. It's derived from the network's total *effective* capacity and the target block time:
+`base_target` is the dial that keeps blocks landing roughly on schedule. It's set from the network's total *effective* capacity and the target block time:
 
 ```
-denominator      = total_effective_capacity × 8,192 × 240
-base_target      = 2^64 ÷ denominator
+denominator = total_effective_capacity × 8,192 × 240
+base_target = 2^64 ÷ denominator
 ```
 
-The relationship between capacity and `base_target` is **linearly inverse**: doubling the network's effective capacity halves `base_target`, which stretches expected deadlines and pulls the realized block time back toward the **240-second** target. Difficulty is re-adjusted over a window of 8,192 blocks, and the target is floored so the chain never stalls.
+The relationship is linearly inverse: double the network's effective capacity, and `base_target` halves — which pushes expected deadlines up and pulls the realized block time back toward the 240-second target. Difficulty re-adjusts every 8,192 blocks, with a floor so the chain can't stall out.
 
 ### 3.4 Effective capacity and tiers
 
-Disk space doesn't translate into forging power one-for-one, on purpose. A plain linear mapping would let one very large miner take over the network. CCpoc converts raw capacity into *effective* capacity with a sub-linear curve combined with tiers:
+Raw storage doesn't translate one-to-one into forging power — on purpose. A straight linear mapping would let one big miner dominate. So CCpoc runs capacity through a square-root curve, then tiers it:
 
-| Tier | Raw size (GB) | Name | Effective-capacity multiplier |
+| Tier | Raw size (GB) | Name | Multiplier |
 |---|---|---|---|
 | 1 | 0 – 32 | drawer | × 1.0 |
 | 2 | 32 – 500 | small | × 1.6 |
 | 3 | 500 – 5,000 | medium | × 2.4 |
 | 4 | 5,000 – 10,000 | large | × 3.2 |
-| 5 | > 10,000 | capped | size capped at 10,000 GB, × 3.2 |
+| 5 | > 10,000 | capped | size frozen at 10,000 GB, × 3.2 |
 
 ```
 effective_capacity = sqrt(capped_size) × tier_multiplier
 ```
 
-Two things follow:
+Two things fall out of this:
 
-- **Diminishing returns.** Because capacity is square-rooted, doubling your storage less than doubles your effective power. Small miners aren't priced out, and the network shrugs off concentration.
-- **A hard ceiling.** A dedicated cap binds effective capacity, so no single actor can corner an arbitrarily large fraction of the network by filling endless disk. The top tier reuses the biggest multiplier but freezes the size term. It's a fixed effective capacity no matter how much is actually stored above the cap.
+- **Diminishing returns.** Because it's rooted, doubling your storage doesn't double your power. Small miners aren't priced out, and the network resists concentration.
+- **A hard ceiling.** Past 10 TB, effective capacity just... stops growing. The top tier reuses the tier-4 multiplier but freezes the size term, so piling on more disk past that point buys you nothing extra.
 
 ### 3.5 Reward distribution across multiple miners
 
-Most proof-of-capacity and proof-of-work designs hand the entire block reward to one winner. CCpoc deliberately does something different: the reward for each block is **shared across that block's miners**, by tier.
+Most PoC and PoW designs pay one winner, full stop. CCpoc splits it instead — the block reward is shared across that block's miners, by tier:
 
 | Tier | Share of block reward |
 |---|---|
@@ -140,54 +126,130 @@ Most proof-of-capacity and proof-of-work designs hand the entire block reward to
 | tier_4 (large) | 25% |
 | tier_5 (capped) | 35% |
 
-How it works:
+Here's how it plays out:
 
-1. The block reward is split among the tiers that hold valid proof submissions for that challenge, in proportion to the shares above.
-2. Within each tier, that tier's share is divided among its valid submissions.
-3. The miner whose deadline won the challenge, the block's **forger**, takes a **winner share of 70%** of their own tier's portion. The remaining 30% of that tier's portion is shared among the other valid miners on the same tier.
+1. The block reward splits across tiers that had valid submissions, using the shares above.
+2. Within a tier, that tier's share splits again across every valid submission in it.
+3. The miner who actually won the challenge — the block's forger — takes a **70% winner share** of their own tier's portion. The remaining 30% is split among everyone else who submitted a valid proof in that same tier.
 
-The point is explicit: holding a big chunk of storage does **not** translate into a big, unbounded cut of rewards. The effective-capacity cap, the fixed tier shares, and the intratier split all push rewards toward decentralization and keep a single large operator from hoarding emission.
+The intent is straightforward: owning a lot of storage doesn't buy you a proportionally unbounded slice of rewards. The capacity cap, fixed tier shares, and intra-tier split all push against any single big operator quietly taking over emission.
 
-### 3.6 Finalization
+### 3.6 Finalization and reorgs
 
-As with any longest-chain protocol, safety comes down to accumulated confirmations. A block is considered finalized once it's buried under a fixed number of confirmations (a depth of 30 blocks). Reorganizations roll back through a path that recomputes account balances and contract state from stored history, so switching to a heavier sibling chain always restores a consistent state.
+Same idea as any longest-chain protocol: safety comes from stacking confirmations. A block counts as finalized once it's buried under 30 confirmations. If a heavier sibling chain shows up, a rollback path recomputes balances and contract state from stored history so the switch lands on consistent state.
 
 ---
 
 ## 4. Network
 
-The network is a peer-to-peer mesh of nodes that pass around blocks, transactions, challenges, and proofs.
+Nodes talk to each other over WebSocket, gossiping blocks, transactions, challenges, and proofs.
 
-- Nodes connect over WebSocket and keep a bounded set of peers, with fail and ban thresholds to kick out troublemakers.
-- New transactions and freshly forged blocks get broadcast; a node that realizes it missed a block asks for it.
-- Periodic heartbeat and discovery keep the membership warm, and let nodes join or leave freely.
-- A node accepts a block only if it validates against the current state. Nodes vote with their storage by working to extend the head they believe in, and a heavier (higher-work) chain replaces a lighter one.
+- Peers connect over WebSocket, with fail/ban thresholds to eject anyone misbehaving.
+- New transactions and blocks get broadcast; a node that notices it's behind just asks for what it's missing.
+- Heartbeat and discovery run periodically, so nodes can join or drop freely without the network losing track.
+- A block only gets accepted if it checks out against current state; nodes effectively "vote" by extending whichever tip they think is correct, and a heavier chain wins.
 
-Nodes expose two interfaces:
+Two interfaces sit on top of that:
 
-- a **REST API** for observability and administration, and
-- an **Ethereum JSON-RPC** surface (`eth_sendRawTransaction`, `eth_call`, `eth_getBalance`, `eth_getTransactionByHash`, `eth_getBlockByNumber`/`ByHash`, `eth_getStorageAt`, `eth_getCode`, `eth_chainId`, and others), so existing Ethereum wallets and tooling can talk to the network without learning anything new.
+- a **REST API** for observability and admin work, and
+- **Ethereum JSON-RPC** (`eth_sendRawTransaction`, `eth_call`, `eth_getBalance`, `eth_getTransactionByHash`, `eth_getBlockByNumber`/`ByHash`, `eth_getStorageAt`, `eth_getCode`, `eth_chainId`, and more), so existing Ethereum wallets and tooling just work.
 
 ---
 
 ## 5. Smart contracts and the EVM
 
-CCpoc embeds a complete Ethereum virtual machine (EthereumJS, at the Shanghai hard-fork) and runs contracts compiled with Solidity (solc 0.8.28).
+CCpoc runs a full Ethereum virtual machine (EthereumJS, Shanghai hard-fork) and executes Solidity contracts compiled with solc 0.8.28.
 
-### 5.1 Capabilities
+### 5.1 What it supports
 
-- The full opcode set through Shanghai, including `PUSH0`, `CREATE2`, and `EXTCODEHASH`.
-- The standard precompiles: `ecrecover`, `sha256`, `ripemd160`, `identity`, `modexp`, BN254 (add/mul/pairing), and `blake2f`.
+- The complete opcode set through Shanghai — `PUSH0`, `CREATE2`, `EXTCODEHASH` included.
+- Standard precompiles: `ecrecover`, `sha256`, `ripemd160`, `identity`, `modexp`, BN254 (add/mul/pairing), `blake2f`.
 - Persistent per-address contract storage.
-- `CREATE`/`CREATE2` so contracts can deploy other contracts.
-- Contract events/logs emitted during execution.
-- **Native CC** as the value token — contracts can receive and transfer CC.
+- `CREATE`/`CREATE2`, so contracts can deploy contracts.
+- Contract events/logs from execution.
+- **Native CC** as the value token — contracts can hold and move it directly.
 
 ### 5.2 State commitment and verifiability
 
-Each block commits to the outcome of execution. Two Merkle roots go into the header:
+Every block commits to what execution actually produced, via two Merkle roots in the header: a **transactions root** over tx hashes, and a **state root** over the full account state — every address, balance, nonce, plus contract storage.
 
-- a **transactions root** over the transaction hashes, and
-- a **state root** over the full account state (every address, balance, and nonce, plus contract storage).
+Every node re-executes the block's transactions and recomputes both roots independently; if they don't match what the block claims, the block gets rejected. Execution is deterministic, public, and checkable by anyone — and the same Merkle commitments let you build inclusion proofs for transactions or account state without replaying the whole chain.
 
-Every node re-executes the transactions and recomputes these roots when it receives a block; if they don't match the committed values, the block is rejected. Execution is therefore **deterministic, public, and verifiable by everyone**. And because of those Merkle commitments, you can prove a transaction or piece of account state without replaying history — the roots enable inclusion proofs.
+### 5.3 Native contracts
+
+The network ships a few reference contracts out of the box: a **hash-time-locked contract** for atomic swaps, a **liquidity pool** for trading CC against other tokens, an **order-book market**, and a couple of token templates — enough to stand up a basic DeFi stack directly on-chain.
+
+---
+
+## 6. Incentives and token economics
+
+### 6.1 Emission
+
+CC is minted entirely through block rewards, fair-launch style: supply starts at zero, nothing is pre-allocated to founders, investors, or a treasury. Every coin that exists came from mining.
+
+- **Initial reward:** 1.65 CC per block.
+- **Halving interval:** every 6,300,000 blocks (~47.9 years at the 240-second target block time), the reward halves by integer division.
+
+```
+reward(n) = 1.65 ÷ (2 ^ floor(n / 6,300,000))
+```
+
+Because halving is geometric, the total supply this policy settles on converges to roughly **20.79 million CC** (`1.65 × 6,300,000 × 2`) — a bit under the round 21 million figure people tend to quote. Think of 21 million the way Bitcoin's cap gets talked about: an asymptotic, rounded ceiling that emission approaches over decades of halvings, without landing on it exactly under these particular parameters.
+
+### 6.2 Fee market
+
+CC pays for everything on the network. A plain transfer costs its intrinsic gas; contracts cost gas proportional to what they actually compute and store. Gas is priced off the network's minimum gas price, and total gas per block is bounded by a target and a hard cap — predictable block capacity, with a base fee that adjusts to demand.
+
+### 6.3 Why the reward gets shared
+
+Splitting the reward across miners (Section 3.5) is a deliberate incentive choice: it rewards capacity more evenly and keeps forging profitable for lots of small miners at once, rather than handing the whole thing to whoever happens to win a given block. That's the decentralization the storage-based model is supposed to deliver, backed up by how rewards actually flow.
+
+---
+
+## 7. Security
+
+### 7.1 Signatures and authenticity
+
+- Accounts derive from secp256k1 public keys.
+- Transactions and blocks are both authenticated with recoverable ECDSA signatures — the signature itself yields the public key, so no external registry is needed to verify who signed what.
+- Block signatures work the same way, letting anyone bind a block to its forger without trusting a central directory.
+
+### 7.2 Consensus security
+
+- **Double-spend prevention** — per-account nonces plus balance checks on every block make spending the same coin twice impossible within a consistent view of the chain.
+- **Grinding resistance** — challenges come from unforgeable chain history (Section 3.2), so there's no favorable challenge to fish for.
+- **Concentration resistance** — effective capacity is sub-linear and capped (Section 3.4), and rewards spread across tiers (Section 3.5), which lowers the payoff of just piling on more disk.
+- **Finalization** — confirmation depth gives a reorg-safe horizon (Section 3.6).
+
+### 7.3 Storage as the thing actually securing you
+
+At the end of the day, security comes down to how much effective capacity honest miners control. Because capacity is rooted and capped, grabbing a majority means controlling an outsized — and deliberately diminishing-return — slice of the network's committed space. Expensive by design.
+
+---
+
+## 8. Privacy
+
+CCpoc's privacy model is the same pseudonymity you get on any account-based chain. Addresses don't have to be tied to a real identity, and anyone can generate a fresh key pair offline. Every transaction is public, though, so this isn't confidentiality — it's pseudonymous addresses plus fully transparent balances. Value flows are visible; who's behind the key is up to the user.
+
+---
+
+## 9. Reference implementation status
+
+Everything above describes the protocol as **intended**. In the reference implementation (ChocoNode v3.6.0) reviewed alongside this document, one thing relevant to consensus security isn't finished yet:
+
+- **The PoC proof itself isn't cryptographically re-verified on block acceptance.** Recomputing the `deadline` from scoop data, the Merkle proof, and the generation signature (Section 3.2) — the actual check that a claimed win is real — doesn't happen in the block-acceptance path today. The network currently trusts the `winner_proof` signature and whether it matches a locally-recorded submission, but doesn't independently recompute and verify the deadline.
+- Blocks pulled in via REST sync currently skip signature and difficulty/target validation, and blocks already sitting in the database don't get re-checked during chain reorganizations.
+
+None of this breaks the design in Sections 3–5 — it's implementation work that's still outstanding, and it should be treated as launch-blocking before mainnet, not a nice-to-have.
+
+---
+
+## 10. Conclusion
+
+CCpoc puts two ideas in one permissionless network. Securing the chain with Proof-of-Capacity makes mining accessible on commodity storage and cuts consensus's electricity footprint way down compared to Proof-of-Work. Bundling in a full Ethereum-compatible EVM makes that storage-secured ledger immediately useful — smart contracts, tokens, dApps — with native CC running the whole thing.
+
+Every design choice here — challenge derivation from the chain, capacity-based difficulty, tiered and capped effective capacity, reward split across many miners — points at one outcome: a decentralized, low-energy, programmable network that ordinary people can help secure with hardware they already own.
+
+---
+
+*This document describes the CCpoc protocol as intended. Parameters and mechanics may evolve in future versions.*
