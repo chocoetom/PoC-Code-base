@@ -1,6 +1,6 @@
 # CCpoc
 
-**A peer-to-peer value transfer network secured by Proof-of-Capacity, with a built-in Ethereum-compatible virtual machine.**
+**A Peer-to-Peer Decentralized Proof Of Capacity network, built with ethereum EVM**
 
 Version 1.0
 
