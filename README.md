@@ -1,20 +1,16 @@
-# CCpoc
-
-**A peer-to-peer, decentralized Proof-of-Capacity network, with a native Ethereum-compatible EVM.**
+CCpoc
+A decentralized Proof-of-Capacity network, featuring a native EVM compatible with Ethereum.
 
 Version 1.0
 
----
+Abstract
+CCpoc is a self-sufficient blockchain that does not require permission and aims to utilize old devices and transform them into something useful - sustainably mining for a greener planet 🌱
 
-## Abstract
+CCpoc was designed specifically for regular computer devices, especially small and low-power retired devices that other available networks are ignoring or setting high bar to use. CCpoc makes it possible to start with zero capacity in mining thus transforming excess electronic waste into a worthy crypto miner.
 
-CCpoc is an independent, permissionless blockchain, focused on turning old hardware into something useful — mining, sustainably, for a more eco-conscious world 🌱
+CCpoc is an innovative storage coin that allows creating the project’s own tokens and smart contracts thanks to its built-in EVM compatible with Ethereum: the users can create and run Solidity contracts as well as hold their own coin and use decentralized applications secured by Proof-of-Capacity without spending high amount of energy, like in Proof-of-Work.
 
-CCpoc is built for ordinary hardware, and specifically for small, low-power, already-retired devices that other storage networks simply ignore, or gate behind high minimums most people can't meet. CCpoc lets you start mining with *essentially zero* capacity, turning e-waste into a real crypto miner.
-
-CCpoc isn't just another storage coin. It lets you create your own tokens and contracts through a built-in **Ethereum-compatible EVM**: anyone can deploy and run Solidity contracts, hold a native currency, and use decentralized applications — all secured by Proof-of-Capacity, without the energy and hardware intensity of Proof-of-Work.
-
-CC starts from a **fair launch**: total supply begins at zero, grows only through block rewards across recurring halvings, and creeps toward a hard cap. No pre-mine, no founder stash, no investor allocation.
+CCpoc starts with a fair launch. The total supply starts at zero and gradually grows with mining and block rewards. There was no pre-mine, no stake for the founder or investors.
 
 ---
 
