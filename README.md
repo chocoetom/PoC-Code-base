@@ -1,4 +1,4 @@
-## CCpoc, a decentralized Proof-of-Capacity network, featuring a native EVM compatible with Ethereum.
+## CCPoC; a decentralized Proof-of-Capacity network, featuring a native EVM compatible with Ethereum.
 
 Version 1.0
 
