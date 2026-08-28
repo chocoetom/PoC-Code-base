@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
 
     env_file:
-      - ./config.env
+      - ./config/config.env
 
     ports:
       - "3800:3800"
