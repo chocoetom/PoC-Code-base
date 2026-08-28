@@ -1,6 +1,6 @@
 ## CCPoC - a decentralized Proof-of-Capacity network, featuring a native EVM compatible with Ethereum.
 
-Version 1.0
+Version 1.0 (alpha testnet)
 
 Abstract
 CCpoc is a self-sufficient blockchain that does not require permission and aims to utilize old devices and transform them into something useful - sustainably mining for a greener planet 🌱
