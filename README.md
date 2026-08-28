@@ -8,7 +8,7 @@ Version 1.0
 
 ## Abstract
 
-CCpoc is an independent, permissionless blockchain that secures itself with **storage space instead of raw computing power**. Miners set aside disk space in the form of plots and earn the right to forge blocks based on the effective capacity they control. The only electricity spent is what's needed to scan that space — there's no endless burning of joules to hash until you get lucky.
+CCPoC is an independent permissionless blockchain, focused on turning old hardware in a way to mine with sustentability, for a more eco world 🌱
 
 The whole point of that trade is **accessibility**. CCpoc is built for ordinary hardware — and, above all, for the small, low-power, and already-retired devices that other storage networks simply ignore. Where competitors demand big minimums (Chia's ~101.4 GiB `k32` plots, Storj's multi-hundred-gigabyte nodes), CCpoc lets you in starting from essentially zero capacity. A device nobody wants anymore can find a real second life here instead of becoming e-waste.
 
