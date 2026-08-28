@@ -1,5 +1,238 @@
 const crypto = require('crypto');
+const { keccak256 } = require('ethers');
+const { secp256k1 } = require('@noble/curves/secp256k1.js');
+const rlp = require('@ethereumjs/rlp');
 const ZERO_HASH = '0'.repeat(64);
+
+const SECP_COMPRESSED_LEN = 33;
+const SECP_UNCOMPRESSED_LEN = 65;
+
+function isHexString(v) {
+  if (typeof v !== 'string') return false;
+  return /^0x[0-9a-fA-F]+$/.test(v) || /^[0-9a-fA-F]+$/.test(v) || /^0x[0-9a-fA-F]*$/.test(v);
+}
+
+function stripHex(v) {
+  if (typeof v !== 'string') return v;
+  return v.replace(/^0x/i, '');
+}
+
+// Normalizes any supported public key representation into the 33-byte
+// compressed secp256k1 public key (Buffer). Accepts base64-encoded compressed
+// (33B) or uncompressed (65B) keys, and hex-encoded compressed (66 chars) or
+// uncompressed (130 chars) keys, with or without the 0x prefix.
+function normalizeSecpPublicKey(pub) {
+  if (!pub) throw new Error('Invalid public key');
+  let raw = null;
+  if (typeof pub === 'string') {
+    if (/^[0-9a-fA-F]+$/.test(stripHex(pub)) && stripHex(pub).length >= 64) {
+      const hex = stripHex(pub);
+      raw = Buffer.from((hex.length % 2 ? '0' : '') + hex, 'hex');
+    } else {
+      try { raw = Buffer.from(pub, 'base64'); } catch { raw = null; }
+    }
+  } else if (Buffer.isBuffer(pub)) {
+    raw = pub;
+  } else if (pub instanceof Uint8Array) {
+    raw = Buffer.from(pub);
+  }
+  if (!raw || (raw.length !== SECP_COMPRESSED_LEN && raw.length !== SECP_UNCOMPRESSED_LEN && raw.length !== 64)) {
+    throw new Error('Invalid secp256k1 public key');
+  }
+  if (raw.length === SECP_UNCOMPRESSED_LEN) {
+    return Buffer.from(secp256k1.ProjectivePoint.fromHex(raw).toRawBytes(true));
+  }
+  if (raw.length === 64) {
+    const uncompressed = Buffer.concat([Buffer.from([0x04]), raw]);
+    return Buffer.from(secp256k1.ProjectivePoint.fromHex(uncompressed).toRawBytes(true));
+  }
+  // already compressed (33 bytes) — validate by decompressing
+  secp256k1.ProjectivePoint.fromHex(raw);
+  return raw;
+}
+
+function secpEncodePublicKey(pub) {
+  return normalizeSecpPublicKey(pub).toString('base64');
+}
+
+function decodePublicKey(pub) {
+  // Returns uncompressed raw 64 bytes (x||y) used for address derivation.
+  const compressed = normalizeSecpPublicKey(pub);
+  const uncompressed = secp256k1.ProjectivePoint.fromHex(compressed).toRawBytes(false);
+  return Buffer.from(uncompressed.slice(1));
+}
+
+function secpPublicKeyFromPrivate(privateKeyHex) {
+  const pk = Buffer.from(stripHex(String(privateKeyHex)), 'hex');
+  if (pk.length !== 32) throw new Error('Invalid private key length');
+  return Buffer.from(secp256k1.getPublicKey(new Uint8Array(pk), true));
+}
+
+function secpAddressFromPrivate(privateKeyHex) {
+  return pubkeyToAddress(secpPublicKeyFromPrivate(privateKeyHex));
+}
+
+// secp256k1 sign: signs the keccak256 hash of the given message with the
+// private key, producing a recoverable 65-byte signature encoded as base64
+// [v (1 byte: 0/1), r (32), s (32)].
+function signMessage(message, privateKeyHex) {
+  const pk = Buffer.from(stripHex(String(privateKeyHex)), 'hex');
+  if (pk.length !== 32) throw new Error('Invalid private key length');
+  const msgBytes = Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8');
+  const digest = Uint8Array.from(Buffer.from(stripHex(keccak256('0x' + msgBytes.toString('hex'))), 'hex'));
+  const recovered = secp256k1.sign(digest, new Uint8Array(pk), { format: 'recovered', prehash: false });
+  // recovered is a Signature with .recovery, .r, .s
+  const bufR = Buffer.alloc(32);
+  const bufS = Buffer.alloc(32);
+  const bigToBuf = (b) => { const hex = b.toString(16).padStart(64, '0'); return Buffer.from(hex, 'hex'); };
+  bigToBuf(recovered.r).copy(bufR);
+  bigToBuf(recovered.s).copy(bufS);
+  return Buffer.concat([Buffer.from([recovered.recovery]), bufR, bufS]).toString('base64');
+}
+
+// verifies a 65-byte recoverable signature (from signMessage) against the
+// given message and public key.
+function verifySignature(message, sigB64, pubB64) {
+  try {
+    const sig = Buffer.isBuffer(sigB64) ? sigB64 : Buffer.from(String(sigB64), 'base64');
+    if (sig.length !== 65) return false;
+    const pub = normalizeSecpPublicKey(pubB64);
+    const msgBytes = Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8');
+    const digest = Uint8Array.from(Buffer.from(stripHex(keccak256('0x' + msgBytes.toString('hex'))), 'hex'));
+    const signature = secp256k1.Signature.fromBytes(sig.slice(1, 65));
+    return secp256k1.verify(signature, digest, pub, { prehash: false });
+  } catch { return false; }
+}
+
+// Recovers the 65-byte public key (uncompressed 0x04||x||y) that produced a
+// signature over the message. Returns a Buffer; throws on failure.
+function recoverPublicKey(message, sigB64) {
+  const sig = Buffer.isBuffer(sigB64) ? sigB64 : Buffer.from(String(sigB64), 'base64');
+  if (sig.length !== 65) throw new Error('Invalid signature length');
+  const msgBytes = Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8');
+  const digest = Uint8Array.from(Buffer.from(stripHex(keccak256('0x' + msgBytes.toString('hex'))), 'hex'));
+  const signature = secp256k1.Signature.fromBytes(sig.slice(1, 65)).addRecoveryBit(sig[0]);
+  return Buffer.from(signature.recoverPublicKey(digest).toRawBytes(false));
+}
+
+function pubkeyToAddress(pub) {
+  const raw = decodePublicKey(pub); // 64 bytes x||y
+  if (raw.length !== 64) throw new Error('Invalid secp256k1 public key');
+  const hash = stripHex(keccak256('0x' + raw.toString('hex')));
+  return '0x' + hash.slice(-40);
+}
+
+function pubKeyToAddress(pubKey) { return pubkeyToAddress(pubKey); }
+
+function privateKeyToAddress(privateKeyHex) {
+  return pubkeyToAddress(secpPublicKeyFromPrivate(privateKeyHex));
+}
+
+function toChecksumAddress(address) {
+  const lower = String(address || '').toLowerCase().replace(/^0x/i, '');
+  const hash = keccak256('0x' + lower).replace(/^0x/i, '');
+  let out = '0x';
+  for (let i = 0; i < lower.length; i++) {
+    out += parseInt(hash[i], 16) >= 8 ? lower[i].toUpperCase() : lower[i];
+  }
+  return out;
+}
+
+function isValidAddress(address) {
+  return typeof address === 'string' && /^0x[0-9a-fA-F]{40}$/.test(address);
+}
+
+// ---- Ethereum (EVM) transaction encoding / signing -------------------------
+
+function toMinBytes(v) {
+  const n = (typeof v === 'bigint') ? v : (() => { try { return BigInt(v == null || v === '' ? 0 : v); } catch { return 0n; } })();
+  if (n === 0n) return Buffer.alloc(0);
+  let hex = n.toString(16);
+  if (hex.length % 2) hex = '0' + hex;
+  return Buffer.from(hex, 'hex');
+}
+
+function hexToBuffer(hex) {
+  if (hex == null) return Buffer.alloc(0);
+  let h = String(hex).replace(/^0x/i, '');
+  if (h.length % 2) h = '0' + h;
+  return Buffer.from(h, 'hex');
+}
+
+// Encodes the RLP payload used for signing a legacy (pre-typed) EVM
+// transaction in the internal chain tx model.
+function encodeLegacyTxPayload(tx) {
+  const to = tx.to_addr ? hexToBuffer(tx.to_addr) : Buffer.alloc(0);
+  const data = tx.data ? hexToBuffer(tx.data) : Buffer.alloc(0);
+  return [
+    toMinBytes(tx.nonce == null ? 0 : tx.nonce),
+    toMinBytes(tx.gas_price),
+    toMinBytes(tx.gas_limit),
+    to, 
+    toMinBytes(tx.value),
+    data,
+    toMinBytes(tx.chain_id || 0),
+    Buffer.alloc(0),
+    Buffer.alloc(0),
+  ];
+}
+
+// The keccak256 hash a legacy EVM transaction is signed over (EIP-155 field
+// order: nonce, gasPrice, gas, to, value, data, chainId, 0, 0). Hex string.
+function evmTxDigest(tx) {
+  return stripHex(keccak256('0x' + Buffer.from(rlp.encode(encodeLegacyTxPayload(tx))).toString('hex')));
+}
+
+function evmTxHash(tx) {
+  return '0x' + evmTxDigest(tx);
+}
+
+// Signs the RLP transaction hash with ECDSA over secp256k1, returning a base64
+// 65-byte recoverable signature [v(1), r(32), s(32)].
+function signTransactionTx(tx, privateKeyHex) {
+  const pk = Buffer.from(stripHex(String(privateKeyHex)), 'hex');
+  if (pk.length !== 32) throw new Error('Invalid private key length');
+  const digest = Uint8Array.from(Buffer.from(evmTxDigest(tx), 'hex'));
+  const recovered = secp256k1.sign(digest, new Uint8Array(pk), { format: 'recovered', prehash: false });
+  const bigToBuf = (b) => Buffer.from(b.toString(16).padStart(64, '0'), 'hex');
+  const r = bigToBuf(recovered.r);
+  const s = bigToBuf(recovered.s);
+  return Buffer.concat([Buffer.from([recovered.recovery]), r, s]).toString('base64');
+}
+
+// Recovers the sender address (lowercase 0x...) of an internal tx from its
+// stored 65-byte recoverable signature (base64 or 0x-hex). Returns null on failure.
+function recoverTransactionSender(tx) {
+  const sigIn = tx && (tx.signature || tx.rpc_signature);
+  if (!sigIn) return null;
+  let sig;
+  if (Buffer.isBuffer(sigIn)) sig = sigIn;
+  else {
+    const str = String(sigIn);
+    if (/^0x[0-9a-fA-F]+$/.test(str) || /^[0-9a-fA-F]+$/.test(str)) {
+      sig = Buffer.from(str.replace(/^0x/i, ''), 'hex');
+      if (sig.length !== 65 && !/^0x/.test(str)) sig = Buffer.from(str, 'base64');
+    } else {
+      sig = Buffer.from(str, 'base64');
+    }
+  }
+  if (sig.length !== 65) return null;
+  const digest = Uint8Array.from(Buffer.from(evmTxDigest(tx), 'hex'));
+  try {
+    const signature = secp256k1.Signature.fromBytes(sig.slice(1, 65)).addRecoveryBit(sig[0]);
+    const pub = Buffer.from(signature.recoverPublicKey(digest).toRawBytes(false));
+    return pubkeyToAddress(pub).toLowerCase();
+  } catch { return null; }
+}
+
+function signatureToHex(sigB64) {
+  const sig = Buffer.isBuffer(sigB64) ? sigB64 : Buffer.from(String(sigB64), 'base64');
+  return '0x' + sig.toString('hex');
+}
+
+function signatureFromHex(hex) {
+  return Buffer.from(stripHex(hex), 'hex').toString('base64');
+}
 
 function sha256hex(data) {
   return crypto.createHash('sha256').update(typeof data === 'string' ? data : data).digest('hex');
@@ -141,34 +374,6 @@ function safeInt(value, def = 0) {
 function safeBigInt(value, def = 0n) {
   if (typeof value === 'bigint') return value;
   try { return BigInt(value); } catch { return def; }
-}
-
-function pubkeyToAddress(pubB64) {
-  const raw = Buffer.from(pubB64, 'base64');
-  if (raw.length !== 32) throw new Error('Invalid Ed25519 key');
-  return '0xcc' + sha256hex(raw).slice(0, 40);
-}
-
-function pubKeyToAddress(pubKey) { return pubkeyToAddress(pubKey); }
-
-function signMessage(message, privateKeyHex) {
-  const key = Buffer.from(privateKeyHex, 'hex');
-  const prefix = Buffer.from('302e020100300506032b657004220420', 'hex');
-  const pkcs8 = Buffer.concat([prefix, key]);
-  const privKeyObj = crypto.createPrivateKey({ key: pkcs8, format: 'der', type: 'pkcs8' });
-  const sig = crypto.sign(null, Buffer.from(message), privKeyObj);
-  return sig.toString('base64');
-}
-
-function verifySignature(message, sigB64, pubB64) {
-  try {
-    const pubRaw = Buffer.from(pubB64, 'base64');
-    if (pubRaw.length !== 32) return false;
-    const sig = Buffer.from(sigB64, 'base64');
-    const spki = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), pubRaw]);
-    const pubObj = crypto.createPublicKey({ key: spki, format: 'der', type: 'spki' });
-    return crypto.verify(null, Buffer.from(message), pubObj, sig);
-  } catch { return false; }
 }
 
 function merkleRoot(hashes) {
@@ -489,8 +694,12 @@ function getChainWorkForBlock(blk) {
 }
 
 module.exports = {
-  ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt, pubkeyToAddress, pubKeyToAddress,
-  signMessage, verifySignature, merkleRoot, merkleRootBuffer, merkleRootBuf, merkleRootBuf2, computeMerkleProof, computeMerkleProofBuf, computeMerkleProofBuf2, computeMerkleTreeNodes, verifyMerkleProof, verifyMerkleProofBuf,
+  ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt,
+  normalizeSecpPublicKey, secpEncodePublicKey, decodePublicKey, secpPublicKeyFromPrivate,
+  secpAddressFromPrivate, privateKeyToAddress, toChecksumAddress, isValidAddress, recoverPublicKey,
+  pubkeyToAddress, pubKeyToAddress, signMessage, verifySignature,
+  evmTxDigest, evmTxHash, signTransactionTx, recoverTransactionSender, signatureToHex, signatureFromHex,
+  merkleRoot, merkleRootBuffer, merkleRootBuf, merkleRootBuf2, computeMerkleProof, computeMerkleProofBuf, computeMerkleProofBuf2, computeMerkleTreeNodes, verifyMerkleProof, verifyMerkleProofBuf,
   canonicalTxMessage, hashTransaction, hashBlock, blockMessage, proofMessage, plotRegisterMessage,
   computeStateRoot, computeStateRootAfterTxs, computeContractStateRoot, calculateMiningReward, isBetterChainCandidate,
   SCOOP_SIZE, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, PLOT_FORMAT_V3, merkleTreeInternalNodeCount, plotScoopCount, plotScoopCountOrig,

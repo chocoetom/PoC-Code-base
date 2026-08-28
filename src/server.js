@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage, verifySignature, plotRegisterMessage } = require('./crypto');
+const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, secpPublicKeyFromPrivate, privateKeyToAddress, toChecksumAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage, verifySignature, plotRegisterMessage, signTransactionTx, evmTxHash, recoverTransactionSender, signatureToHex } = require('./crypto');
 const { log, getLogBuffer } = require('./config');
 const { createPlotFile, MAX_PLOT_GB } = require('./plot');
 
@@ -148,7 +148,6 @@ class Server {
       });
     });
 
-// USE THIS ENDPOINT FOR STATS (its better)
 app.get('/api/state', (req, res) => {
   const running = !!this.chain;
   const config = this.cfg;
@@ -255,15 +254,14 @@ app.get('/api/state', (req, res) => {
         if (!from_addr || (!to_addr && !data)) return res.status(400).json({ error: 'from_addr and to_addr (or data for contract creation) required' });
         
         const normalizedFrom = from_addr.toLowerCase();
-        const user = this.db.prepare('SELECT balance, nonce, public_key_ed25519 FROM users WHERE lower(address) = lower(?)').get(normalizedFrom);
-        if (!user || !user.public_key_ed25519) return res.status(400).json({ error: 'address not registered (no public key)' });
+        const user = this.db.prepare('SELECT balance, nonce FROM users WHERE lower(address) = lower(?)').get(normalizedFrom);
         
         const hasData = !!(data && /^0x[0-9a-fA-F]*$/.test(String(data)));
         const amountNum = amount === undefined || amount === null ? 0 : Number(amount);
         if (isNaN(amountNum) || amountNum < 0) return res.status(400).json({ error: 'invalid amount' });
         const valueWei = String(Math.round(amountNum * 1e18));
         
-        const nonce = user.nonce || 0;
+        const nonce = user ? (user.nonce || 0) : 0;
         const gasPrice = gas_price || this.chain._baseFeeForHeight(this.chain.height + 1);
         const defaultGas = hasData ? 3000000 : 21000;
         const gasLimit = gas_limit || defaultGas;
@@ -282,8 +280,7 @@ app.get('/api/state', (req, res) => {
         };
         if (hasData) tx.data = String(data);
         
-        const msg = canonicalTxMessage(tx);
-        const txHash = hashTransaction(tx);
+        const txHash = evmTxHash(tx);
         
         const estimatedGas = require('./crypto').estimateIntrinsicGas ? require('./crypto').estimateIntrinsicGas(tx) : gasLimit;
         const currentBaseFee = BigInt(this.chain._baseFeeForHeight(this.chain.height + 1));
@@ -292,12 +289,12 @@ app.get('/api/state', (req, res) => {
         res.json({
           ok: true,
           transaction: tx,
-          sign_message: msg,
+          sign_message: '0x' + (require('./crypto').evmTxDigest ? require('./crypto').evmTxDigest(tx) : ''),
           tx_hash: txHash,
           estimated_gas: estimatedGas,
           estimated_fee: estimatedFee,
           gas_price: String(currentBaseFee),
-          balance: user.balance,
+          balance: user ? user.balance : '0',
           nonce
         });
       } catch (e) { res.status(400).json({ error: e.message }); }
@@ -330,7 +327,7 @@ app.get('/api/state', (req, res) => {
       const normalizedAddress = address.toLowerCase();
       try { if (pubkeyToAddress(public_key).toLowerCase() !== normalizedAddress) return res.status(400).json({ error: 'address does not match public key' }); } catch { return res.status(400).json({ error: 'Invalid public key' }); }
       const now = Math.floor(Date.now() / 1000);
-      this.db.prepare('INSERT INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?) ON CONFLICT(address) DO UPDATE SET public_key_ed25519 = excluded.public_key_ed25519, updated_at = excluded.updated_at').run(normalizedAddress, public_key, now, now);
+      this.db.prepare('INSERT INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?) ON CONFLICT(address) DO UPDATE SET public_key_secp256k1 = excluded.public_key_secp256k1, updated_at = excluded.updated_at').run(normalizedAddress, public_key, now, now);
       log('info', `Imported wallet: address=${normalizedAddress}, public_key=${public_key}`);
       res.json({ ok: true, address: normalizedAddress });
     });
@@ -341,14 +338,14 @@ app.get('/api/state', (req, res) => {
       const normalizedAddress = address.toLowerCase();
       try { if (pubkeyToAddress(public_key).toLowerCase() !== normalizedAddress) return res.status(400).json({ error: 'address does not match public key' }); } catch { return res.status(400).json({ error: 'Invalid public key' }); }
       const now = Math.floor(Date.now() / 1000);
-      const existing = this.db.prepare('SELECT address, public_key_ed25519 FROM users WHERE lower(address) = lower(?)').get(normalizedAddress);
-      if (existing && existing.public_key_ed25519) {
+      const existing = this.db.prepare('SELECT address, public_key_secp256k1 FROM users WHERE lower(address) = lower(?)').get(normalizedAddress);
+      if (existing && existing.public_key_secp256k1) {
         return res.status(409).json({ ok: false, error: 'public key already registered', address: normalizedAddress });
       }
       if (existing) {
-        this.db.prepare('UPDATE users SET public_key_ed25519 = ?, updated_at = ? WHERE lower(address) = lower(?)').run(public_key, now, normalizedAddress);
+        this.db.prepare('UPDATE users SET public_key_secp256k1 = ?, updated_at = ? WHERE lower(address) = lower(?)').run(public_key, now, normalizedAddress);
       } else {
-        this.db.prepare('INSERT INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
+        this.db.prepare('INSERT INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
       }
       log('info', `Registered wallet: address=${normalizedAddress}, public_key=${public_key}`);
       res.json({ ok: true, address: normalizedAddress, public_key });
@@ -421,6 +418,8 @@ app.get('/api/state', (req, res) => {
       res.json({ ok: true, plot_id, miner });
     });
 
+    // Public plot registration for external miners: authenticated with an Ed25519
+    // signature from the wallet that owns the miner address.
     app.post('/api/poc/register_plot_public', mutationLimiter, (req, res) => {
       const { miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature } = req.body || {};
       if (!miner || !plot_id || !merkle_root || size_gb == null || total_scoops == null || !public_key || !signature) {
@@ -441,11 +440,13 @@ app.get('/api/state', (req, res) => {
       const now = Math.floor(Date.now() / 1000);
       this.db.prepare('INSERT OR REPLACE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, total_scoops, created_at) VALUES (?,?,?,?,?,?)')
         .run(plot_id, normalizedAddress, merkle_root, parseFloat(String(size_gb)) || 0, safeInt(total_scoops, 0), now);
+      // Register the miner's pubkey so their winner_proof signatures can be
+      // verified later even without an explicit wallet/register call.
       const existingUser = this.db.prepare('SELECT address FROM users WHERE lower(address) = lower(?)').get(normalizedAddress);
       if (!existingUser) {
-        this.db.prepare('INSERT INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
+        this.db.prepare('INSERT INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
       } else {
-        this.db.prepare('UPDATE users SET public_key_ed25519 = ?, updated_at = ? WHERE lower(address) = lower(?)').run(public_key, now, normalizedAddress);
+        this.db.prepare('UPDATE users SET public_key_secp256k1 = ?, updated_at = ? WHERE lower(address) = lower(?)').run(public_key, now, normalizedAddress);
       }
       log('info', `[MINERS] Plot registered (signed): miner=${normalizedAddress}, plot_id=${plot_id}, size_gb=${size_gb}, merkle_root=${merkle_root}`);
       res.json({ ok: true, plot_id, miner: normalizedAddress });
@@ -533,22 +534,20 @@ app.get('/api/state', (req, res) => {
           return res.json({ ok: true, mode: 'read', returnValue: result.returnValue, gasUsed: result.gasUsed });
         }
         const pkHex = String(private_key).startsWith('0x') ? String(private_key).slice(2) : String(private_key);
-        const key = Buffer.from(pkHex, 'hex');
-        const prefix = Buffer.from('302e020100300506032b657004220420', 'hex');
-        const privKeyObj = crypto.createPrivateKey({ key: Buffer.concat([prefix, key]), format: 'der', type: 'pkcs8' });
-        const pubKeyObj = crypto.createPublicKey(privKeyObj);
-        const pubB64 = pubKeyObj.export({ type: 'spki', format: 'der' }).subarray(12).toString('base64');
-        const from_addr = sender || pubkeyToAddress(pubB64);
+        const pubComp = secpPublicKeyFromPrivate(pkHex);
+        const pubB64 = pubComp.toString('base64');
+        const derivedAddr = pubkeyToAddress(pubComp);
+        const from_addr = (sender || derivedAddr).toLowerCase();
         const now = Math.floor(Date.now() / 1000);
-        this.db.prepare('INSERT INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?) ON CONFLICT(address) DO UPDATE SET public_key_ed25519 = excluded.public_key_ed25519, updated_at = excluded.updated_at').run(from_addr, pubB64, now, now);
+        this.db.prepare('INSERT INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?) ON CONFLICT(address) DO UPDATE SET public_key_secp256k1 = excluded.public_key_secp256k1, updated_at = excluded.updated_at').run(from_addr, pubB64, now, now);
         const user = this.db.prepare('SELECT balance, nonce FROM users WHERE lower(address) = lower(?)').get(from_addr);
         const nonce = user ? (user.nonce || 0) : 0;
         const gasPrice = req.body.gas_price || this.chain._baseFeeForHeight(this.chain.height + 1);
         const gasLimit = req.body.gas_limit || 3000000;
         const tx = { from_addr, to_addr: address, value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce, fee: req.body.fee || String(gasLimit), gas_limit: gasLimit, gas_price: String(gasPrice), chain_id: this.cfg.chainId || '0', priority_fee: req.body.priority_fee || '0', data: calldata };
-        const msg = canonicalTxMessage(tx);
-        tx.signature = signMessage(msg, pkHex);
-        tx.hash = hashTransaction(tx);
+        tx.signature = signTransactionTx(tx, pkHex);
+        tx.hash = evmTxHash(tx);
+        tx.status = 1;
 const validation = await this.chain.validateTxForMempool(tx);
         if (!validation.ok) return res.status(400).json({ ok: false, error: validation.motivo });
         const result = this.chain.addMempoolTx(tx);
@@ -811,6 +810,21 @@ const validation = await this.chain.validateTxForMempool(tx);
     app.get('/health/readiness', (req, res) => res.json({ ok: true }));
 
     let port = this.cfg.port;
+
+    // Ethereum-compatible JSON-RPC (wallet support) on the same HTTP port.
+    // Mounted on the root (POST) and /rpc so wallets pointed at either the
+    // node URL or /rpc work. The existing GET routes are unaffected.
+    try {
+      const { EthereumRPC } = require('./ethereum-rpc');
+      this.ethRpc = new EthereumRPC(this.cfg, this.db, this.chain, this.sync, this.peers, this.smartContracts, this.NODE_ID);
+      const rpcRouter = this.ethRpc.router();
+      app.post('/', rpcRouter);
+      app.use('/rpc', rpcRouter);
+      log('info', `Ethereum JSON-RPC enabled on ${port} (routes: /, /rpc)`);
+    } catch (e) {
+      log('warn', `Ethereum JSON-RPC failed to initialize: ${e.message}`);
+    }
+
     this.server = require('http').createServer(app);
     this.server.listen(port, '0.0.0.0', () => {
       log('info', `HTTP server listening on port ${port}`);

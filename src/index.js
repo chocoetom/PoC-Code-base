@@ -40,12 +40,21 @@ ${CYAN}      _                     _           _
     ${DIM}ADMIN_TOKEN${RESET}       ...                       Admin API token
 
   ${GREEN}CONFIG FILES${RESET}
-    config.env                    KEY=VALUE overrides
-    node_config.json              Auto-generated, overrides defaults
+    config/config.env               KEY=VALUE overrides
+    config/node_config.json         Auto-generated, overrides defaults
 
   ${GREEN}EXAMPLES${RESET}
     node src/index.js
     PORT=3002 node src/index.js
+
+${DIM}                    _                  _(_)_                          wWWWw   _
+      @@@@       (_)@(_)   vVVVv     _     @@@@  (___) _(_)_
+     @@()@@ wWWWw  (_)\\    (___)   _(_)_  @@()@@   Y  (_)@(_)
+      @@@@  (___)     \`|/    Y    (_)@(_)  @@@@   \\|/   (_)\\
+       /      Y       \\|    \\|/    /(_)    \\|      |/      |
+    \\ |     \\ |/       | / \\ | /  \\|/       |/    \\|      \\|/
+jgs \\\\|//   \\\\|///  \\\\\\|//\\\\\\|/// \\|///  \\\\\\|//  \\\\|//  \\\\\\|//${RESET}
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   `);
   process.exit(0);
 }
