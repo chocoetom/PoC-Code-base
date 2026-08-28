@@ -85,8 +85,6 @@ function recoverableSignatureFromParsed(parsed) {
   return Buffer.concat([Buffer.from([recovery]), to32(parsed.r), to32(parsed.s)]);
 }
 
-// ---------------------------------------------------------------------------
-
 class EthereumRPC {
   constructor(cfg, db, chain, sync, peers, smartContracts, nodeId) {
     this.cfg = cfg;
