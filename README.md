@@ -6,41 +6,33 @@ Version 1.0
 Abstract
 CCpoc is a self-sufficient blockchain that does not require permission and aims to utilize old devices and transform them into something useful - sustainably mining for a greener planet 🌱
 
-CCpoc was designed specifically for regular computer devices, especially small and low-power retired devices that other available networks are ignoring or setting high bar to use. CCpoc makes it possible to start with zero capacity in mining thus transforming excess electronic waste into a worthy crypto miner.
+CCpoc was designed specifically for regular computer devices, especially small and low-power retired devices that other available networks are ignoring or setting a high bar to use. CCpoc makes it possible to start mining with zero capacity, thus transforming excess electronic waste into a worthy crypto miner.
 
-CCpoc is an innovative storage coin that allows creating the project’s own tokens and smart contracts thanks to its built-in EVM compatible with Ethereum: the users can create and run Solidity contracts as well as hold their own coin and use decentralized applications secured by Proof-of-Capacity without spending high amount of energy, like in Proof-of-Work.
+CCpoc isn't just another storage coin. It allows creating the project's own tokens and smart contracts thanks to its built-in EVM compatible with Ethereum: users can create and run Solidity contracts as well as hold their own coin and use decentralized applications, all secured by Proof-of-Capacity without spending the high amount of energy that Proof-of-Work requires.
 
 CCpoc starts with a fair launch. The total supply starts at zero and gradually grows with mining and block rewards. There was no pre-mine, no stake for the founder or investors.
 
----
+1. Storage is valued over work
 
-### 1. Storage is valued over work.
+The majority of blockchain systems secure their network by consuming electricity. Miners are engaged in calculations trying to find a hash that is below a target number, and whoever gets to it first is awarded a block. The process is repeated every few minutes. While this system works, it has its drawbacks. The less than pleasant consequences are high power consumption and constant competition for the best mining hardware — only a narrow circle of people can afford to buy it, and even if they manage to do it, they should know that in a few years the chip will be rendered useless due to the invention of a new one.
 
-The majority of blockchain systems obtain their protocol by consuming electricity. Miners are engaged in calculations trying to find a hash that is below a target number and whoever gets to it first is awarded a block. The process is repeated every few minutes. While this system works, it has its drawbacks. The less than pleasant consequences are high power consumption and constant competition for the best mining hardware, only a narrow circle of people can afford to buy it, and even if they manage to do it, they should know that in a few years, the chip will be rendered useless due to invention of a new one. 
+Unlike this process, Proof-of-Capacity makes things entirely different. This method requires only a one-time investment in disk space (so-called plotting) and then just checking if the required piece of information is available on the disk. The only costs involved are for the space itself and a little electricity needed for the readouts.
 
-Unlike this process, Proof-of-Capacity makes things entirely different. Unlike the above-mentioned technology, this method requires only once investment in disk space (so-called plotting) and then just checking if the required piece of information is available on the disk. The only costs involved are for the space and little electricity needed for the readouts.
+1.1 The problem with high minimums
 
-### 1.1 The issue with elevated minimums
+The majority of storage networks still impose restrictions on participants. For example, Chia requires that plotters possess a k32 plot of no smaller than around 101.4 GiB. Storj and similar networks expect nodes to provide hundreds of gigabytes up to terabytes of storage while maintaining a steady internet connection. Requirements like these make sure that a majority of households simply cannot participate.
 
-The majority of storage networks still impose restrictions on participants. For example, Chia requires that plotters possess an excessively large `k32` plot of around 101.4 GiB. Moreover, like the other networks, Storj expects its nodes to provide hundreds of gigabytes and terabytes of storage to their respective clients while maintaining a steady internet connection. Such requirements make sure that a majority of households cannot participate in the network membership.
+That's a shame, because most unused devices end up sitting in attics or in landfills instead — an old laptop, a single board computer with a small SSD attached, an old external drive that hasn't been connected to anything in years.
 
-This is because the majority of devices are unused either and are left in attic space or landfills. Such as an old laptop or a single board computer with not only a sealed SSD installed inside but also attached outside. Or an old external drive that hasn't been connected to any device for many years.
+CCpoc doesn't place any high standards. The scoop is 32 bytes, and capacity is accepted starting from practically zero. There are no minimum plot sizes or minimum node capacities set in the protocol. Effective capacity is tiered and rooted (more in 3.4), and even a small plot gets some returns — minimal, but real, and proportional to what the device can actually offer.
 
-CCpoc doesn't place any high standards. The scoop is 32 bytes, and the capacity is accepted starting from practically zero. There are no minimum plot sizes or number of nodes set in the protocol. Effective capacity is tiered and rooted (more in 3.4) and even a small plot gets some returns — minimal ones, but still depending on what exactly the device is capable of.
+So that's the basic idea: turn hardware that was supposed to be thrown away into an active network participant instead of yet another piece of e-waste, while keeping the chain secure. Generate the plot once, and let it earn for years after that. Storage is cheap, and when the threshold is low, mining becomes much more widespread.
 
-So that's the basic idea. Make used hardware that was supposed to be thrown away into an active network participant instead of yet another piece of e-waste, while keeping the chain secure. Have the plot generated and then let it earn for years. Storage is cheap, and when the threshold is low, mining becomes much more widespread.
+However, this doesn't come without a cost. Consensus through proof-of-space requires significantly more care than consensus through proof-of-work. There's a lot that goes into the creation of challenges, selecting winners, splitting rewards, and reaching agreement — an error at any of those stages leaves the system open to grinding, exploitation, or capture by a single miner. The rest of this document is about how CCpoc tries to avoid those errors.
 
-However, this does not come without a cost. Consensus through proof-of-space requires significantly more consideration than that through proof-of-work. There’s a lot that goes into the creation of challenges, selecting winners, splitting rewards, and achieving consensus. An error made at any stage results in making the system prone to grinding, exploitation, and total control by a single miner. The rest of this document is about how CCpoc tries to evade such errors.
- 
-## 2. Transactions
+2. Transactions
 
-Transaction comprises the movement of value between accounts, which is similar to Ethereum where an account is derived from a secp256k1 public key. The transaction consists of participants’ information—sender and receiver, the amount of value, nonce, as well as gas amounts, the immediate payment of which is expected to cost CC.
-
-That signature matters more than it sounds like it should. Because it's recoverable ECDSA over secp256k1 — `v, r, s` — the public key comes straight out of the signature itself. No separate registry needed. Any node can check who sent something and whether they were allowed to.
-
-Blocks contain an ordered list of these. Each one gets checked against current state before it's applied — sender has to exist, needs enough balance for value plus fee, nonce has to be exactly the next expected one. Once it clears, balances shift, the fee gets collected, and the new state rolls into the block's state root, which is covered later in Section 5.
-
----
+A transaction is the movement of value between accounts, similar to Ethereum, where an account is derived from a secp256k1 public key. A transaction carries the sender's and receiver's addresses, the amount of value being sent, a nonce, and gas parameters — the payment for which is expected in CC.
 
 ## 3. Consensus — Proof-of-Capacity
 
