@@ -1,7 +1,3 @@
-// Ethereum-compatible JSON-RPC endpoint for ChocoNode.
-// Exposes the standard Ethereum JSON-RPC 2.0 methods expected by popular
-// wallets (MetaMask, Trust, Coinbase, Rabby, Frame, WalletConnect, etc.) on
-// the SAME HTTP port as the node's existing HTTP API.
 const express = require('express');
 const { keccak256 } = require('ethers');
 const { createCustomCommon, Hardfork, Mainnet } = require('@ethereumjs/common');
@@ -58,8 +54,6 @@ function normalizeAddr(addr) {
   return a;
 }
 
-// Resolves a block tag ("latest"/"earliest"/"pending"/hex) to a height
-// number. Returns -1 for earliest, or null when the tag resolves to nothing.
 function resolveBlockTag(chain, tag) {
   if (tag === undefined || tag === null || tag === 'latest' || tag === 'pending' || tag === '') {
     return chain.height;
@@ -82,8 +76,6 @@ function getBlockFromDatabase(db, heightOrHash) {
   return db.prepare('SELECT * FROM blocks WHERE lower(hash) = ?').get(hash) || null;
 }
 
-// Extracts a 65-byte recoverable signature [recoveryId, r, s] from a parsed
-// @ethereumjs/tx. recoveryId is derived from the EIP-155 `v` value.
 function recoverableSignatureFromParsed(parsed) {
   const vn = BigInt(parsed.v || 0n);
   let recovery = 0;
@@ -105,8 +97,6 @@ class EthereumRPC {
     this.smartContracts = smartContracts;
     this.nodeId = nodeId;
     this._networkChainId = this._resolveChainId(cfg.chainId);
-    // Use a Common that matches this node's chainId so createTxFromRLP accepts
-    // EIP-155 wallets txs signed for this network (v encodes our chainId).
     try {
       this.common = createCustomCommon({ chainId: this._networkChainId, networkId: this._networkChainId, name: 'ChocoNode' }, Mainnet, { hardfork: Hardfork.Shanghai });
     } catch {
@@ -277,8 +267,6 @@ class EthereumRPC {
     };
   }
 
-  // Handles eth_sendRawTransaction. Parses the raw EVM transaction (RLP),
-  // recovers the sender via secp256k1, validates and adds to the mempool.
   async _sendRawTransaction(rawHex) {
     if (!rawHex) throw rpcError(-32602, 'missing raw transaction');
     let rawBytes;
