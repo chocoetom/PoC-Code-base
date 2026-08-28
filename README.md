@@ -2,7 +2,7 @@
 
 Version 1.0 (alpha testnet)
 
-Abstract
+Abstract:
 CCpoc is a self-sufficient blockchain that does not require permission and aims to utilize old devices and transform them into something useful - sustainably mining for a greener planet 🌱
 
 CCpoc was designed specifically for regular computer devices, especially small and low-power retired devices that other available networks are ignoring or setting a high bar to use. CCpoc makes it possible to start mining with zero capacity, thus transforming excess electronic waste into a worthy crypto miner.
