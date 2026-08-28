@@ -138,7 +138,7 @@ class SyncEngine {
             continue;
           }
           block._from_local_forge = false;
-          const insertResult = await this.chain.addBlock(block, { skipStateValidation: true, skipContractStateValidation: true, skipSignature: true, skipTargetValidation: true });
+          const insertResult = await this.chain.addBlock(block, { skipStateValidation: false, skipContractStateValidation: false, skipSignature: false, skipTargetValidation: false });
           if (!insertResult.ok) { log('debug', `sync: block insert rejected at #${block.height}: ${insertResult.motivo}`); break; }
           inserted++;
           from = block.height + 1;
