@@ -1,4 +1,4 @@
-const { log, normalizeUrl } = require('../config');
+const { log, normalizeUrl } = require('../../config/config');
 
 const TIMEOUT_MS = [0, 5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 3600_000];
 

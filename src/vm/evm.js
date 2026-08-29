@@ -33,7 +33,7 @@ function bigBuf(b) {
 }
 
 function hexify(buf) {
-  return '0x' + buf.toString('hex');
+  return '0x' + Buffer.from(buf).toString('hex');
 }
 
 function encodeCall(signature, ...args) {

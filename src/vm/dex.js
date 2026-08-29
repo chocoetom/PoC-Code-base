@@ -2,17 +2,17 @@ const { BN } = require('bn.js');
 const { createBlock } = require('@ethereumjs/block');
 const crypto = require('crypto');
 const { AbiCoder, Interface, id } = require('ethers');
-const { hashTransaction, ZERO_HASH, calculateMiningReward, computeStateRoot, computeContractStateRoot } = require('../crypto');
+const { hashTransaction, ZERO_HASH, calculateMiningReward, computeStateRoot, computeContractStateRoot } = require('../crypto-utils/crypto');
 const { compileHTLC, compileLPMarket, compileCcPool } = require('./contracts/index.js');
 const pluginRegistry = require('./modules/index.js');
-const { privateToAddress } = require('@ethereumjs/util');
+const { privateToAddress, bytesToHex } = require('@ethereumjs/util');
 
 const WEI = 10n ** 18n;
 const FEE = 21000n;
 const ABI = AbiCoder.defaultAbiCoder();
 
 function evmAddress(systemAddress) {
-  return '0x' + systemAddress.replace(/^0x/i, '').slice(2);
+  return '0x' + systemAddress.replace(/^0x/i, '');
 }
 
 function encodeCall(signature, ...args) {
@@ -35,7 +35,7 @@ function pad32(hex) {
 }
 
 function last40(returnValue) {
-  return '0xcc' + returnValue.replace(/^0x/i, '').slice(-40);
+  return '0x' + returnValue.replace(/^0x/i, '').slice(-40);
 }
 
 function readUint(returnValue, offsetWords) {
@@ -88,7 +88,7 @@ function htlcInit(receiver, hashlock, timelock) {
 }
 
 function ccFromEthKey(privKeyHex) {
-  return '0xcc' + privateToAddress(Buffer.from(String(privKeyHex).replace(/^0x/i, ''), 'hex')).toString('hex');
+  return bytesToHex(privateToAddress(Buffer.from(String(privKeyHex).replace(/^0x/i, ''), 'hex')));
 }
 
 function formatAmount(wei, decimals = 18) {
@@ -120,7 +120,7 @@ function createDex(opts) {
   let reader = (opts.reader || '').toLowerCase();
   let pool = (opts.pool || '').toLowerCase();
   let poolToken = (opts.poolToken || '').toLowerCase();
-  const viewSender = () => reader || market || '0xcc' + '0'.repeat(40);
+  const viewSender = () => reader || market || '0x' + '0'.repeat(40);
   const balanceOf = (addr) => {
     const row = db.prepare('SELECT balance FROM users WHERE lower(address) = lower(?)').get(addr);
     return row ? BigInt(row.balance) : 0n;

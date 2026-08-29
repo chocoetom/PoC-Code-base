@@ -34,7 +34,7 @@ function initDB(dbPath, cfg) {
       hash TEXT PRIMARY KEY, from_addr TEXT, to_addr TEXT, value TEXT,
       fee TEXT, nonce INTEGER, gas_limit INTEGER, gas_price TEXT,
       signature TEXT, block_height INTEGER, timestamp INTEGER,
-      block_hash TEXT DEFAULT ''
+      block_hash TEXT DEFAULT '', chain_id TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_tx_from ON transactions(from_addr);
     CREATE INDEX IF NOT EXISTS idx_tx_to ON transactions(to_addr);
@@ -135,7 +135,7 @@ function initDB(dbPath, cfg) {
         updated_at INTEGER
       )
     `).run();
-  } catch (e) { /* table likely exists */ }
+  } catch (e) {}
 
   try { db.prepare('DELETE FROM block_rewards WHERE rowid NOT IN (SELECT MIN(rowid) FROM block_rewards GROUP BY block_height, block_hash, miner, plot_id, share_pct, reward_cc)').run(); } catch (e) { /* nothing to clean */ }
   try { db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS ux_block_rewards ON block_rewards (block_height, block_hash, miner, plot_id, share_pct, reward_cc)').run(); } catch (e) { /* duplicates present, skipped */ }
@@ -149,7 +149,7 @@ function initDB(dbPath, cfg) {
         PRIMARY KEY (contract_address, slot)
       )
     `).run();
-  } catch (e) { /* table likely exists */ }
+  } catch (e) {}
 
   try {
     db.prepare(`
@@ -158,7 +158,7 @@ function initDB(dbPath, cfg) {
         balance TEXT DEFAULT '0'
       )
     `).run();
-  } catch (e) { /* table likely exists */ }
+  } catch (e) {}
 
   try {
     db.prepare(`
@@ -175,22 +175,28 @@ function initDB(dbPath, cfg) {
     `).run();
     db.prepare('CREATE INDEX IF NOT EXISTS idx_sc_storage_history_height ON smart_contract_storage_history(block_height)').run();
     db.prepare('CREATE INDEX IF NOT EXISTS idx_sc_storage_history_hash ON smart_contract_storage_history(block_hash)').run();
-  } catch (e) { /* table likely exists */ }
+  } catch (e) {}
 
   try { db.prepare('ALTER TABLE challenge_submissions ADD COLUMN proof_signature TEXT DEFAULT ""').run(); } catch {}
 
   try {
     db.prepare('DELETE FROM challenge_submissions WHERE id NOT IN (SELECT MIN(id) FROM challenge_submissions GROUP BY challenge_id, miner, plot_id, deadline)').run();
     db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS ux_sub_challenge_plot ON challenge_submissions(challenge_id, miner, plot_id, deadline)').run();
-  } catch (e) { /* duplicates present, skipped */ }
+  } catch (e) {}
 
   try { db.prepare('ALTER TABLE blocks ADD COLUMN winner_proof TEXT DEFAULT ""').run(); } catch {}
-  // Snapshot of network base_target at challenge creation. Deadlines are
-  // validated against this value so live bt drift (plot registrations,
-  // difficulty adjustments) cannot invalidate in-flight proofs.
   try { db.prepare('ALTER TABLE mining_challenges ADD COLUMN base_target TEXT').run(); } catch {}
   try { db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch {}
   try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN total_scoops INTEGER DEFAULT 0').run(); } catch {}
+  try { db.prepare("ALTER TABLE transactions ADD COLUMN chain_id TEXT DEFAULT ''").run(); } catch {}
+
+  const chainIdDefault = String(cfg.chainId || '0');
+  try {
+    const updatedRows = db.prepare("UPDATE transactions SET chain_id = ? WHERE chain_id IS NULL OR chain_id = ''").run(chainIdDefault);
+    if (updatedRows.changes > 0) {
+      try { db.prepare("UPDATE transactions SET chain_id = ?").run(chainIdDefault); } catch (e) {}
+    }
+  } catch (e) {}
 
   try {
     const rows = db.prepare('SELECT address, balance, nonce, public_key_secp256k1 FROM users WHERE address != lower(address)').all();
@@ -207,15 +213,32 @@ function initDB(dbPath, cfg) {
         db.prepare('UPDATE users SET address = ? WHERE address = ?').run(lower, row.address);
       }
     }
-  } catch (e) { /* migration may have already run */ }
+  } catch (e) {}
 
-  // Fair launch: no premine. Total supply starts at 0 and grows only via
-  // block rewards (see calculateMiningReward), capped by cfg.maxSupply.
   const treasuryAddress = '0x' + '0'.repeat(40);
   const existingTreasury = db.prepare('SELECT balance FROM users WHERE address = ?').get(treasuryAddress);
   if (!existingTreasury) {
     db.prepare('INSERT OR IGNORE INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(treasuryAddress, '', '0', 0, cfg.genesisTimestamp || Math.floor(Date.now() / 1000), cfg.genesisTimestamp || Math.floor(Date.now() / 1000));
   }
+
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS contract_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tx_hash TEXT NOT NULL,
+        block_height INTEGER NOT NULL,
+        block_hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL,
+        address TEXT NOT NULL,
+        topics TEXT NOT NULL,
+        data TEXT NOT NULL
+      )
+    `).run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_block_hash ON contract_logs(block_hash)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_height ON contract_logs(block_height)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_address ON contract_logs(address)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_tx_hash ON contract_logs(tx_hash)').run();
+  } catch (e) { /* table likely exists */ }
 
   return db;
 }

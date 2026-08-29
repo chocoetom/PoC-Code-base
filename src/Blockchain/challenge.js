@@ -1,7 +1,7 @@
 const crypto = require('crypto');
-const { ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRootAfterTxs, calculateMiningReward, verifyMerkleProofBuf, computeDeadline, plotScoopCount, getTier, computeEffectiveCapacityGb, computeBaseTargetWithTier, TIERS, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, verifySignature, canonicalTxMessage, proofMessage, recoverTransactionSender } = require('../crypto');
-const { log } = require('../config');
-const { runHook } = require('../optional');
+const { ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRootAfterTxs, calculateMiningReward, verifyMerkleProofBuf, computeDeadline, plotScoopCount, getTier, computeEffectiveCapacityGb, computeBaseTargetWithTier, TIERS, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, verifySignature, canonicalTxMessage, proofMessage, recoverTransactionSender } = require('../crypto-utils/crypto');
+const { log } = require('../../config/config');
+const { runHook } = require('../bootstrap/optional');
 
 
 const TIER_REWARD_PCT = { tier_1: 8, tier_2: 12, tier_3: 20, tier_4: 25, tier_5: 35 };
@@ -22,7 +22,6 @@ class ChallengeManager {
     const challengeId = sha256hex(`${genSig}:${tipHash}`);
     const targetIdx = parseInt(sha256hex(genSig).slice(0, 8), 16) % MINING_SCOOP_MODULUS;
     const challengeGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 240) / 2));
-    // Grace period before a dead challenge can be replaced by a fresh one.
     const challengeExpiredGraceSec = Math.max(this.cfg.challengeExpiredGraceSec || 300, (this.cfg.expectedTimePerBlock || 240) * 2);
     const baseTarget = this.chain._baseTargetForHeight(this.chain.height);
 
@@ -30,8 +29,6 @@ class ChallengeManager {
     if (existing) return { ...existing, base_target: existing.base_target || String(baseTarget) };
 
     const expired = this.db.prepare('SELECT * FROM mining_challenges WHERE challenge_id = ? AND forged_block_height IS NULL AND expires_at <= ? AND challenge_id IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').get(challengeId, now);
-    // If the expired challenge is still within the grace window, keep waiting for a possible late forge.
-    // If it has been expired too long, continue below to delete & recreate the challenge.
     if (expired && (now - expired.expires_at) <= challengeExpiredGraceSec) {
       return { ...expired, base_target: expired.base_target || String(baseTarget) };
     }
@@ -39,13 +36,13 @@ class ChallengeManager {
     const minTtl = Math.max(this.cfg.challengeTtlSec || 300, (this.cfg.expectedTimePerBlock || 240) * 5);
     const ttl = Math.min(Math.max(minTtl, 60), 86400);
     this.db.prepare('DELETE FROM mining_challenges WHERE forged_block_height IS NULL AND (challenge_id != ? OR expires_at + ? < ?) AND challenge_id NOT IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').run(challengeId, challengeGrace, now);
-    // This delete now also removes the dead expired challenge because expires_at < now - challengeGrace
     this.db.prepare('DELETE FROM mining_challenges WHERE challenge_id = ? AND (forged_block_height IS NOT NULL OR expires_at < ?)').run(challengeId, now - challengeGrace);
     const nonce = crypto.randomBytes(4).toString('hex');
     try {
       this.db.prepare('INSERT INTO mining_challenges (challenge_id, challenge_seed, nonce, target_scoop_index, created_at, expires_at, block_height, base_target) VALUES (?,?,?,?,?,?,?,?)').run(challengeId, genSig, nonce, targetIdx, now, now + ttl, this.chain.height, String(baseTarget));
       log('info', `New challenge ${challengeId.slice(0, 12)}  scoop=${targetIdx}  expires in ${ttl}s`);
-    } catch {
+    } catch (e) {
+      log('error', `[CHALLENGE] Failed to create challenge ${challengeId.slice(0, 12)}: ${e.message}`);
       const r = this.db.prepare('SELECT * FROM mining_challenges WHERE challenge_id = ?').get(challengeId);
       return r || null;
     }
@@ -72,8 +69,6 @@ class ChallengeManager {
     }
     if (!proofPacket || !proofPacket.scoop_data) return { ok: false, motivo: 'proof_packet with scoop_data required for PoC verification' };
     const genSig = ch.challenge_seed || ZERO_HASH;
-    // Validate against the bt snapshot taken when the challenge was issued;
-    // live bt drift between scan and submit must not invalidate proofs.
     const networkBaseTarget = ch.base_target || chain._baseTargetForHeight(ch.block_height || chain.height);
     const computedDeadline = Math.min(computeDeadline(proofPacket.scoop_data, genSig, sizeGb, networkBaseTarget), maxDl);
     if (Math.abs(computedDeadline - deadline) > 1) return { ok: false, motivo: `PoC verification failed: computed ${computedDeadline}s, submitted ${deadline}s` };
@@ -184,7 +179,7 @@ class ChallengeManager {
         winner_proof: winnerProof || null,
       };
       if (this.cfg.minerPrivateKey) {
-        const { signMessage, blockMessage } = require('../crypto');
+        const { signMessage, blockMessage } = require('../crypto-utils/crypto');
         block.signature = signMessage(blockMessage(block), this.cfg.minerPrivateKey);
       }
       block.hash = hashBlock(block);
@@ -193,6 +188,7 @@ class ChallengeManager {
   }
 
   async finalizeExpiredChallenges(chain, syncEngine) {
+    if (!this.db || this.db.open === false) return;
     const now = Math.floor(Date.now() / 1000);
     const nextHeight = chain.height + 1;
     const existingBlock = this.db.prepare('SELECT hash, challenge_id FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC LIMIT 1').get(nextHeight);
@@ -205,10 +201,16 @@ class ChallengeManager {
       this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(-1, s.challenge_id);
     }
 
-    // The node holding the block-signing identity forges for the NETWORK winner
-    // (rewards go to the winner; the block signature comes from this node's key).
     const canForge = Boolean(this.cfg.minerPrivateKey && String(this.cfg.minerAddress || ''));
-    if (!canForge) return;
+    if (!canForge) {
+      const pendingWinner = this.db.prepare(`SELECT 1 FROM mining_challenges WHERE forged_block_height IS NULL
+        AND winner_miner IS NOT NULL AND winner_deadline IS NOT NULL
+        AND (finalized_at + winner_deadline) <= ? LIMIT 1`).get(now);
+      if (pendingWinner) {
+        log('warn', `[FORGE] Block NOT forged: winner deadline elapsed but this node has no minerPrivateKey/minerAddress configured (set MINER_PRIVATE_KEY to forge)`);
+      }
+      return;
+    }
     const readyToForge = this.db.prepare(`SELECT * FROM mining_challenges WHERE forged_block_height IS NULL
       AND winner_deadline IS NOT NULL AND winner_miner IS NOT NULL
       AND (finalized_at + winner_deadline) <= ? AND block_height >= ?
@@ -249,9 +251,9 @@ class ChallengeManager {
     try {
       const nextHeight = chain.height + 1;
       const existing = this.db.prepare('SELECT hash, challenge_id FROM blocks WHERE height = ? LIMIT 1').get(nextHeight);
-      if (existing) return null;
+      if (existing) { log('info', `[FORGE] Skipping forge for challenge ${challenge.challenge_id.slice(0, 12)}: block already exists at height ${nextHeight} (${existing.hash ? existing.hash.slice(0, 12) : ''})`); return null; }
       const submissions = this.db.prepare('SELECT * FROM challenge_submissions WHERE challenge_id = ?').all(challenge.challenge_id);
-      if (!submissions.length) return null;
+      if (!submissions.length) { log('warn', `[FORGE] Cannot forge challenge ${challenge.challenge_id.slice(0, 12)}: no PoC submissions recorded`); return null; }
       const maxDl = chain.computeMaxDeadline();
       const seenSub = new Set();
       const validSubs = submissions
@@ -276,12 +278,10 @@ class ChallengeManager {
           const sb = String(b.proof_digest || '');
           return sa < sb ? -1 : sa > sb ? 1 : 0;
         });
-      if (!validSubs.length) return null;
+      if (!validSubs.length) { log('warn', `[FORGE] Cannot forge challenge ${challenge.challenge_id.slice(0, 12)}: ${submissions.length} submissions but none valid (deadline > ${chain.computeMaxDeadline()}s or duplicates)`); return null; }
       const winner = validSubs[0];
-      // Forge on behalf of the network winner. The signing identity is this
-      // node's key (block.signature / miner_public_key); rewards are credited
-      // to each submitter per the distribution below.
       if (!this.cfg.minerPrivateKey || !String(this.cfg.minerAddress || '')) {
+        log('error', `[FORGE] Cannot forge challenge ${challenge.challenge_id.slice(0, 12)}: winner d=${winner.deadline}s from ${(winner.miner || '').slice(0, 10)}… but this node has no minerPrivateKey/minerAddress configured`);
         return null;
       }
       const totalReward = calculateMiningReward(chain.height + 1, this.cfg);
@@ -322,7 +322,7 @@ class ChallengeManager {
         proof_signature: winner.proof_signature || '',
       };
       const block = this._forgeBlock(chain, challenge, winner.miner, winner.deadline, distribution, winner.plot_id || '', winner.proof_digest || '', winnerProof);
-      if (!block) return null;
+      if (!block) { log('error', `[FORGE] _forgeBlock returned no block for challenge ${challenge.challenge_id.slice(0, 12)} (winner ${(winner.miner || '').slice(0, 10)}… d=${winner.deadline}s)`); return null; }
       const result = await chain.addBlock(block, { skipStateValidation: true, skipPocValidation: true });
       if (!result.ok) {
         log('error', `Block forge rejected for challenge ${challenge.challenge_id.slice(0, 12)}: ${result.motivo}`);

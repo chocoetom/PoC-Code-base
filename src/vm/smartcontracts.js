@@ -327,7 +327,7 @@ function normalizeHex(input) {
 }
 
 function toEvmAddress(systemAddress) {
-  return new Address(hexToBytes('0x' + normalizeHex(systemAddress).slice(2)));
+  return new Address(hexToBytes('0x' + normalizeHex(systemAddress)));
 }
 
 function nonceToBytes(nonce) {
@@ -340,12 +340,12 @@ function nonceToBytes(nonce) {
 
 function fromEvmAddress(evmBuf) {
   const bytes = evmBuf instanceof Uint8Array ? evmBuf : evmBuf.bytes;
-  return '0xcc' + bytesToHex(bytes).slice(2);
+  return bytesToHex(bytes);
 }
 
 function assertValidAddress(address, label) {
-  if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{42}$/.test(address)) {
-    throw new TypeError(`${label} must be a valid address (0xcc + 40 hex), got: ${address}`);
+  if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    throw new TypeError(`${label} must be a valid EVM address (0x + 40 hex), got: ${address}`);
   }
 }
 
@@ -363,9 +363,9 @@ function assertValidCode(code) {
 
 function deriveContractAddress(senderAddress, nonce) {
   assertValidAddress(senderAddress, 'senderAddress');
-  const senderBuf = Buffer.from(normalizeHex(senderAddress).slice(2), 'hex');
+  const senderBuf = Buffer.from(normalizeHex(senderAddress), 'hex');
   const contractBuf = generateAddress(senderBuf, nonceToBytes(nonce));
-  return '0xcc' + bytesToHex(contractBuf).replace(/^0x/i, '');
+  return '0x' + bytesToHex(contractBuf).replace(/^0x/i, '');
 }
 
 function decodeRevertReason(returnValue) {
@@ -407,6 +407,7 @@ function parseResult(result) {
     );
     err.code = 'VM_REVERT';
     if (reason) err.reason = reason;
+    if (rv && rv !== '0x') err.revertData = rv;
     throw err;
   }
   return {

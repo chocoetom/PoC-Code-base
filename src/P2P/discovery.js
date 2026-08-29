@@ -1,5 +1,5 @@
 const WebSocket = require('ws');
-const { log } = require('../config');
+const { log } = require('../../config/config');
 
 class DiscoveryServer {
   constructor(port) {
