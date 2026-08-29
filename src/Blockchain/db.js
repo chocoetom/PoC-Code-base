@@ -42,7 +42,7 @@ function initDB(dbPath, cfg) {
     CREATE INDEX IF NOT EXISTS idx_tx_block_hash ON transactions(block_hash);
 
     CREATE TABLE IF NOT EXISTS users (
-      address TEXT PRIMARY KEY, public_key_ed25519 TEXT UNIQUE,
+      address TEXT PRIMARY KEY, public_key_secp256k1 TEXT UNIQUE,
       balance TEXT DEFAULT '0', nonce INTEGER DEFAULT 0,
       created_at INTEGER, updated_at INTEGER
     );
@@ -185,20 +185,23 @@ function initDB(dbPath, cfg) {
   } catch (e) { /* duplicates present, skipped */ }
 
   try { db.prepare('ALTER TABLE blocks ADD COLUMN winner_proof TEXT DEFAULT ""').run(); } catch {}
+  // Snapshot of network base_target at challenge creation. Deadlines are
+  // validated against this value so live bt drift (plot registrations,
+  // difficulty adjustments) cannot invalidate in-flight proofs.
   try { db.prepare('ALTER TABLE mining_challenges ADD COLUMN base_target TEXT').run(); } catch {}
   try { db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch {}
   try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN total_scoops INTEGER DEFAULT 0').run(); } catch {}
 
   try {
-    const rows = db.prepare('SELECT address, balance, nonce, public_key_ed25519 FROM users WHERE address != lower(address)').all();
+    const rows = db.prepare('SELECT address, balance, nonce, public_key_secp256k1 FROM users WHERE address != lower(address)').all();
     for (const row of rows) {
       const lower = row.address.toLowerCase();
       const existing = db.prepare('SELECT balance, nonce FROM users WHERE address = ?').get(lower);
       if (existing) {
         const mergedBalance = BigInt(existing.balance || '0') + BigInt(row.balance || '0');
         const mergedNonce = Math.max(existing.nonce || 0, row.nonce || 0);
-        const newPubkey = row.public_key_ed25519 || existing.public_key_ed25519 || '';
-        db.prepare('UPDATE users SET balance = ?, nonce = ?, public_key_ed25519 = ? WHERE address = ?').run(String(mergedBalance), mergedNonce, newPubkey, lower);
+        const newPubkey = row.public_key_secp256k1 || existing.public_key_secp256k1 || '';
+        db.prepare('UPDATE users SET balance = ?, nonce = ?, public_key_secp256k1 = ? WHERE address = ?').run(String(mergedBalance), mergedNonce, newPubkey, lower);
         db.prepare('DELETE FROM users WHERE address = ?').run(row.address);
       } else {
         db.prepare('UPDATE users SET address = ? WHERE address = ?').run(lower, row.address);
@@ -206,10 +209,12 @@ function initDB(dbPath, cfg) {
     }
   } catch (e) { /* migration may have already run */ }
 
-  const treasuryAddress = '0xcc' + '0'.repeat(40);
+  // Fair launch: no premine. Total supply starts at 0 and grows only via
+  // block rewards (see calculateMiningReward), capped by cfg.maxSupply.
+  const treasuryAddress = '0x' + '0'.repeat(40);
   const existingTreasury = db.prepare('SELECT balance FROM users WHERE address = ?').get(treasuryAddress);
   if (!existingTreasury) {
-    db.prepare('INSERT OR IGNORE INTO users (address, public_key_ed25519, balance, nonce, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(treasuryAddress, '', '0', 0, cfg.genesisTimestamp || Math.floor(Date.now() / 1000), cfg.genesisTimestamp || Math.floor(Date.now() / 1000));
+    db.prepare('INSERT OR IGNORE INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(treasuryAddress, '', '0', 0, cfg.genesisTimestamp || Math.floor(Date.now() / 1000), cfg.genesisTimestamp || Math.floor(Date.now() / 1000));
   }
 
   return db;

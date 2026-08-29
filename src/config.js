@@ -3,10 +3,11 @@ const path = require('path');
 const { URL } = require('url');
 
 const BASE_DIR = __dirname + '/..';
+const CONFIG_DIR = path.join(BASE_DIR, 'config');
 
 // Load config.env if present
 try {
-  const envPath = path.join(BASE_DIR, 'config.env');
+  const envPath = path.join(CONFIG_DIR, 'config.env');
   if (fs.existsSync(envPath)) {
     for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
       const trimmed = line.trim();
@@ -23,7 +24,7 @@ try {
   }
 } catch {}
 
-const CONFIG_PATH = process.env.CHOCOHUB_CONFIG || path.join(BASE_DIR, 'node_config.json');
+const CONFIG_PATH = process.env.CHOCOHUB_CONFIG || path.join(CONFIG_DIR, 'node_config.json');
 
 function loadConfig() {
   const defaults = {
@@ -137,6 +138,28 @@ smartContractsEnabled: false,
     const self = defaults.nodeUrl.toLowerCase();
     const filtered = defaults.seedPeers.filter(u => u.toLowerCase() !== self);
     if (filtered.length < defaults.seedPeers.length) defaults.seedPeers = filtered;
+  }
+
+  // Derive secp256k1 miner public key / EVM miner address from the private
+  // key when they are missing or still in the legacy ed25519 format. Keeps
+  // block/challenge signing (signMessage/secp256k1) and proof verification
+  // consistent after the ed25519 -> secp256k1 migration.
+  try {
+    if (defaults.minerPrivateKey && typeof defaults.minerPrivateKey === 'string' && /^[0-9a-fA-F]{64}$/.test(defaults.minerPrivateKey)) {
+      const cryptoApi = require('./crypto');
+      const pub = cryptoApi.secpPublicKeyFromPrivate(defaults.minerPrivateKey);
+      const derivedPub = pub.toString('base64');
+      if (!defaults.minerPublicKey || !/^[A-Za-z0-9+/]{44}={0,2}$/.test(defaults.minerPublicKey)) {
+        defaults.minerPublicKey = derivedPub;
+      }
+      if (!defaults.minerAddress || !/^0x[0-9a-fA-F]{40}$/.test(String(defaults.minerAddress))) {
+        defaults.minerAddress = cryptoApi.privateKeyToAddress(defaults.minerPrivateKey);
+      } else {
+        defaults.minerAddress = cryptoApi.toChecksumAddress(defaults.minerAddress);
+      }
+    }
+  } catch (e) {
+    log('warn', `Could not derive secp miner keys: ${e.message}`);
   }
 
   return defaults;

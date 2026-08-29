@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRootAfterTxs, calculateMiningReward, verifyMerkleProofBuf, computeDeadline, plotScoopCount, getTier, computeEffectiveCapacityGb, computeBaseTargetWithTier, TIERS, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, verifySignature, canonicalTxMessage, proofMessage } = require('../crypto');
+const { ZERO_HASH, sha256hex, sha256buf, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRootAfterTxs, calculateMiningReward, verifyMerkleProofBuf, computeDeadline, plotScoopCount, getTier, computeEffectiveCapacityGb, computeBaseTargetWithTier, TIERS, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, verifySignature, canonicalTxMessage, proofMessage, recoverTransactionSender } = require('../crypto');
 const { log } = require('../config');
 const { runHook } = require('../optional');
 
@@ -22,6 +22,7 @@ class ChallengeManager {
     const challengeId = sha256hex(`${genSig}:${tipHash}`);
     const targetIdx = parseInt(sha256hex(genSig).slice(0, 8), 16) % MINING_SCOOP_MODULUS;
     const challengeGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 240) / 2));
+    // Grace period before a dead challenge can be replaced by a fresh one.
     const challengeExpiredGraceSec = Math.max(this.cfg.challengeExpiredGraceSec || 300, (this.cfg.expectedTimePerBlock || 240) * 2);
     const baseTarget = this.chain._baseTargetForHeight(this.chain.height);
 
@@ -29,6 +30,8 @@ class ChallengeManager {
     if (existing) return { ...existing, base_target: existing.base_target || String(baseTarget) };
 
     const expired = this.db.prepare('SELECT * FROM mining_challenges WHERE challenge_id = ? AND forged_block_height IS NULL AND expires_at <= ? AND challenge_id IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').get(challengeId, now);
+    // If the expired challenge is still within the grace window, keep waiting for a possible late forge.
+    // If it has been expired too long, continue below to delete & recreate the challenge.
     if (expired && (now - expired.expires_at) <= challengeExpiredGraceSec) {
       return { ...expired, base_target: expired.base_target || String(baseTarget) };
     }
@@ -36,6 +39,7 @@ class ChallengeManager {
     const minTtl = Math.max(this.cfg.challengeTtlSec || 300, (this.cfg.expectedTimePerBlock || 240) * 5);
     const ttl = Math.min(Math.max(minTtl, 60), 86400);
     this.db.prepare('DELETE FROM mining_challenges WHERE forged_block_height IS NULL AND (challenge_id != ? OR expires_at + ? < ?) AND challenge_id NOT IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').run(challengeId, challengeGrace, now);
+    // This delete now also removes the dead expired challenge because expires_at < now - challengeGrace
     this.db.prepare('DELETE FROM mining_challenges WHERE challenge_id = ? AND (forged_block_height IS NOT NULL OR expires_at < ?)').run(challengeId, now - challengeGrace);
     const nonce = crypto.randomBytes(4).toString('hex');
     try {
@@ -68,6 +72,8 @@ class ChallengeManager {
     }
     if (!proofPacket || !proofPacket.scoop_data) return { ok: false, motivo: 'proof_packet with scoop_data required for PoC verification' };
     const genSig = ch.challenge_seed || ZERO_HASH;
+    // Validate against the bt snapshot taken when the challenge was issued;
+    // live bt drift between scan and submit must not invalidate proofs.
     const networkBaseTarget = ch.base_target || chain._baseTargetForHeight(ch.block_height || chain.height);
     const computedDeadline = Math.min(computeDeadline(proofPacket.scoop_data, genSig, sizeGb, networkBaseTarget), maxDl);
     if (Math.abs(computedDeadline - deadline) > 1) return { ok: false, motivo: `PoC verification failed: computed ${computedDeadline}s, submitted ${deadline}s` };
@@ -83,10 +89,10 @@ class ChallengeManager {
 
     const proofSig = (proofPacket && proofPacket.proof_signature) || '';
     if (proofSig) {
-      const pkRow = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE lower(address) = lower(?)').get(miner);
-      if (pkRow && pkRow.public_key_ed25519) {
+      const pkRow = this.db.prepare('SELECT public_key_secp256k1 FROM users WHERE lower(address) = lower(?)').get(miner);
+      if (pkRow && pkRow.public_key_secp256k1) {
         const msg = proofMessage(challengeId, miner, deadline, plotId);
-        if (!verifySignature(msg, proofSig, pkRow.public_key_ed25519)) {
+        if (!verifySignature(msg, proofSig, pkRow.public_key_secp256k1)) {
           return { ok: false, motivo: 'proof signature does not match miner address' };
         }
       }
@@ -122,15 +128,15 @@ class ChallengeManager {
           projectedBalance[sender] = user ? safeBigInt(user.balance, 0n) : 0n;
         }
         if (safeInt(tx.nonce, -1) < 0 || safeInt(tx.value, -1) < 0) reason = `invalid tx values for ${sender}`;
-        else if (safeInt(tx.nonce, 0) !== projectedNonce[sender]) reason = `nonce mismatch (tx=${tx.nonce}, expected=${projectedNonce[sender]})`;
+        else if (safeInt(tx.nonce, 0) < projectedNonce[sender]) reason = `stale nonce (tx=${tx.nonce}, expected>=${projectedNonce[sender]})`;
         else if (projectedBalance[sender] < safeBigInt(tx.value, 0n) + safeBigInt(tx.fee, 0n)) reason = `insufficient balance for ${sender}`;
         else {
           const sig = tx.signature || '';
           if (!sig) reason = `missing signature from ${sender}`;
           else {
-            const pubkey = this.db.prepare('SELECT public_key_ed25519 FROM users WHERE address = ?').get(sender);
-            if (!pubkey || !pubkey.public_key_ed25519) reason = `sender ${sender} has no public key`;
-            else if (!verifySignature(canonicalTxMessage(tx), sig, pubkey.public_key_ed25519)) reason = `invalid tx signature from ${sender}`;
+            const recovered = recoverTransactionSender(tx);
+            if (!recovered) reason = `invalid tx signature from ${sender}`;
+            else if (recovered !== sender.toLowerCase()) reason = `recovered sender ${recovered} does not match ${sender}`;
           }
         }
       }
@@ -141,7 +147,7 @@ class ChallengeManager {
       }
       log('info', `[TX] Accepting tx ${(tx.hash || '').slice(0, 12)} from ${sender.slice(0, 14)}... nonce=${tx.nonce}`);
       projectedBalance[sender] -= safeBigInt(tx.value, 0n) + safeBigInt(tx.fee, 0n);
-      projectedNonce[sender]++;
+      projectedNonce[sender] = Math.max(projectedNonce[sender] + 1, safeInt(tx.nonce, 0) + 1);
       good.push(tx);
     }
     log('info', `[TX] selected ${good.length} txs for block`);
@@ -199,6 +205,8 @@ class ChallengeManager {
       this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(-1, s.challenge_id);
     }
 
+    // The node holding the block-signing identity forges for the NETWORK winner
+    // (rewards go to the winner; the block signature comes from this node's key).
     const canForge = Boolean(this.cfg.minerPrivateKey && String(this.cfg.minerAddress || ''));
     if (!canForge) return;
     const readyToForge = this.db.prepare(`SELECT * FROM mining_challenges WHERE forged_block_height IS NULL
@@ -270,6 +278,9 @@ class ChallengeManager {
         });
       if (!validSubs.length) return null;
       const winner = validSubs[0];
+      // Forge on behalf of the network winner. The signing identity is this
+      // node's key (block.signature / miner_public_key); rewards are credited
+      // to each submitter per the distribution below.
       if (!this.cfg.minerPrivateKey || !String(this.cfg.minerAddress || '')) {
         return null;
       }
