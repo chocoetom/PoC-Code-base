@@ -63,6 +63,7 @@ function loadConfig() {
     maxSupply: 21000000 * (10 ** 18),
     maxMempoolSize: 5000,
     mempoolTxTtlSec: 3600,
+    txRelayHops: 6,
     challengeTtlSec: 60,
     winnerSharePct: 70,
     adminToken: '',
