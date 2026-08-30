@@ -14,7 +14,7 @@ COPY src/ ./src/
 COPY chocohub.js ./
 COPY cli.js ./
 
-RUN mkdir -p /app/db /app/node-data /app/plots
+RUN mkdir -p db node-data plots
 
 EXPOSE 3800
 
