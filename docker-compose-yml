@@ -15,9 +15,9 @@ services:
       - "3800:3800"
 
     volumes:
-      - ./db:/app/db
-      - ./node-data:/app/node-data
-      - ./plots:/app/plots
+      - ./db:db
+      - ./node-data:node-data
+      - ./plots:plots
 
     healthcheck:
       test:
