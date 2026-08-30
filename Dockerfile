@@ -11,7 +11,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY src/ ./src/
-COPY config/config.js config/node_config.json ./config/
+COPY config/config.js ./config/
 COPY chocohub.js ./
 COPY cli.js ./
 
