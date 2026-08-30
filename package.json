@@ -3,10 +3,10 @@
   "version": "3.6.0",
   "private": true,
   "bin": {
-    "choco": "./src/index.js"
+    "choco": "./chocohub.js"
   },
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node chocohub.js",
     "cli": "node cli.js"
   },
   "dependencies": {

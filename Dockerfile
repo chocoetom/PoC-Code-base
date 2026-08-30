@@ -20,4 +20,4 @@ EXPOSE 3800
 
 ENV NODE_ENV=production
 
-CMD ["node", "src/index.js"]
+CMD ["node", "chocohub.js"]
