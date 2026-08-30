@@ -1,21 +1,17 @@
 #!/usr/bin/env node
 'use strict';
-
-// Backward-compatible entry point — re-exports from src/
-const { ChocoNode, NodeRegistry } = require('./src/node');
-const { loadConfig, saveConfig, normalizeUrl, normalizeSeedPeers, log, setLogLevel, getLogBuffer, BASE_DIR, CONFIG_PATH } = require('./src/config');
-const crypto_utils = require('./src/crypto');
+const { ChocoNode, NodeRegistry } = require('./src/bootstrap/node');
+const { loadConfig, saveConfig, normalizeUrl, normalizeSeedPeers, log, setLogLevel, getLogBuffer, BASE_DIR, CONFIG_PATH } = require('./config/config');
+const crypto_utils = require('./src/crypto-utils/crypto');
 const db = require('./src/Blockchain/db');
 const chain = require('./src/Blockchain/chain');
 const { Chain } = chain;
 const challenge = require('./src/Blockchain/challenge');
 const { PeerManager } = require('./src/P2P/peers');
 const sync = require('./src/P2P/sync');
-const plot = require('./src/plot');
+const plot = require('./src/crypto-utils/plot');
 const { DiscoveryServer, connectDiscoveryServer } = require('./src/P2P/discovery');
-const { Server } = require('./src/server');
-
-// Re-export everything from crypto
+const { Server } = require('./src/api/server');
 const {
   ZERO_HASH, sha256hex, safeInt, safeBigInt, pubkeyToAddress, pubKeyToAddress,
   signMessage, verifySignature, merkleRoot, computeMerkleProof, verifyMerkleProof,
@@ -24,8 +20,6 @@ const {
   SCOOP_SIZE, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, plotScoopCount, plotScoopCountOrig,
   computeDeadline, deriveSampleIndexes, getChainWorkForBlock,
 } = crypto_utils;
-
-// Fee helpers
 const GWEI = 10 ** 9;
 const TX_GAS = 21000;
 function computeBaseFee(activeMiners = 1, parentGasUsed, parentGasLimit) {
@@ -39,12 +33,10 @@ function computeBaseFee(activeMiners = 1, parentGasUsed, parentGasLimit) {
 }
 function suggestedGasPrice(activeMiners = 1) { return computeBaseFee(activeMiners); }
 function computeFee(gasLimit, gasPrice, priorityFee = 0) { return gasLimit * gasPrice + priorityFee; }
-
 const { ChallengeManager, TIERS, TIER_REWARD_PCT, getTier, computeBaseTargetWithTier } = challenge;
 const { initDB } = db;
 const { buildPocProof, computePlotMerkleRoot, createPlotFile } = plot;
 
-// Self-test
 function main() {
   const cfg = loadConfig();
   setLogLevel(cfg.logLevel);
@@ -52,34 +44,22 @@ function main() {
   node.start();
 }
 
-// Export everything
 module.exports = {
-  // Config
   loadConfig, saveConfig, normalizeUrl, normalizeSeedPeers, log, setLogLevel, getLogBuffer, BASE_DIR, CONFIG_PATH,
-  // Crypto
   ZERO_HASH, sha256hex, safeInt, safeBigInt, pubkeyToAddress, pubKeyToAddress,
   signMessage, verifySignature, merkleRoot, computeMerkleProof, verifyMerkleProof,
   canonicalTxMessage, hashTransaction, hashBlock, blockMessage,
   computeStateRoot, computeStateRootAfterTxs, calculateMiningReward, isBetterChainCandidate,
   SCOOP_SIZE, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, plotScoopCount, plotScoopCountOrig,
   computeDeadline, deriveSampleIndexes, getChainWorkForBlock,
-  // Fees
   GWEI, TX_GAS, computeBaseFee, suggestedGasPrice, computeFee,
-  // Tiers
   TIERS, TIER_REWARD_PCT, getTier, computeBaseTargetWithTier,
-  // Plot
   buildPocProof, computePlotMerkleRoot, createPlotFile,
-  // DB
   initDB,
-  // Discovery
   DiscoveryServer, connectDiscoveryServer,
-  // Chain
   Blockchain: Chain,
-  // Challenge
   ChallengeManager,
-  // Peers
   PeerManager,
-  // Node
   ChocoNode, NodeRegistry, Server,
 };
 
