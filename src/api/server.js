@@ -56,6 +56,17 @@ class Server {
     this._peerStorageCache = { peers: [], local: { plots_count: 0, capacidade_gb: 0 }, fetched_at: 0 };
   }
 
+  relayTx(tx) {
+    if (!tx) return;
+    const maxRelayHops = Math.max(1, safeInt(this.cfg.txRelayHops, 6));
+    if (safeInt(tx.relay_hops, 0) >= maxRelayHops) return;
+    const next = { ...tx, relay_hops: safeInt(tx.relay_hops, 0) + 1 };
+    setImmediate(() => {
+      try { this.sync.broadcastTx(next); } catch {}
+      if (this.p2pWsServer) { try { this.p2pWsServer.broadcastTx(next); } catch {} }
+    });
+  }
+
   async _fetchPeerStorage() {
     try {
       const gossip = this.peers.gossipPeers(50);
@@ -250,7 +261,7 @@ app.get('/api/state', (req, res) => {
       if (!validation.ok) return res.status(400).json({ ok: false, error: validation.motivo });
       if (!tx.hash) tx.hash = hashTransaction(tx);
       const result = this.chain.addMempoolTx(tx);
-      if (result.ok) setImmediate(() => this.sync.broadcastTx(tx));
+      if (result.ok) this.relayTx(tx);
       res.json(result);
     });
 
@@ -479,7 +490,9 @@ app.get('/api/state', (req, res) => {
 
     app.get('/api/contracts/:address', (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
-      const c = this.smartContracts.getSmartContract(req.params.address);
+      const addr = String(req.params.address || '').toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(addr)) return res.status(400).json({ error: 'invalid contract address' });
+      const c = this.smartContracts.getSmartContract(addr);
       if (!c) return res.status(404).json({ error: 'contract not found' });
       res.json({ contract: c });
     });
@@ -728,13 +741,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       if (!validation.ok) return res.status(400).json({ ok: false, error: validation.motivo });
       const result = this.chain.addMempoolTx(tx);
       log('info', `[TX] Mempool tx: hash=${tx.hash ? tx.hash.slice(0,10) : 'unknown'}, from=${tx.from_addr}, nonce=${tx.nonce}, result=${result.ok ? 'accepted' : 'rejected'}, reason=${result.motivo}`);
-      if (result.ok && result.motivo !== 'Tx already in mempool') {
-        const relayHops = safeInt(tx.relay_hops, 0);
-        if (relayHops < 2) {
-          setImmediate(() => this.sync.broadcastTx({ ...tx, relay_hops: relayHops + 1 }));
-          if (this.p2pWsServer) this.p2pWsServer.broadcastTx({ ...tx, relay_hops: relayHops + 1 });
-        }
-      }
+      if (result.ok && result.motivo !== 'Tx already in mempool') this.relayTx(tx);
       res.json(result);
     });
 
