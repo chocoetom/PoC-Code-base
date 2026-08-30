@@ -11,13 +11,14 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY src/ ./src/
+COPY config/config.js config/node_config.json ./config/
 COPY chocohub.js ./
 COPY cli.js ./
 
-RUN mkdir -p db node-data plots
+RUN mkdir -p /app/db /app/node-data /app/plots
 
-EXPOSE 3800
+EXPOSE 3004
 
 ENV NODE_ENV=production
 
-CMD ["node", "src/bootstrap/index.js"]
+CMD ["node", "chocohub.js"]
