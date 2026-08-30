@@ -20,6 +20,7 @@ class Chain {
     try { this.db.prepare('ALTER TABLE transactions ADD COLUMN block_hash TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN base_target TEXT').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN contract_state_root TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
+    try { this.db.prepare('ALTER TABLE blocks ADD COLUMN forger TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE transactions ADD COLUMN data TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     this.stateTrie = new IncrementalStateRoot();
@@ -59,11 +60,11 @@ class Chain {
       const gasUsed = 0;
       this.db.prepare(`INSERT INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
         reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-        total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, rewards_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, rewards_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         0, genesis.hash, ZERO_HASH, now, 'genesis', '', ZERO_HASH, '0', '0', String(target),
         '0', String(reward), 0, String(work), '', ZERO_HASH, '', '', state_root, 'genesis',
         String(totalFees), gasUsed, GAS_PARAMS.blockGasLimit, genesis.base_target, String(GAS_PARAMS.initialBaseFee),
-        genesis.contract_state_root || '', '[]'
+        genesis.contract_state_root || '', genesis.forger || '', '[]'
       );
       this.height = 0;
       this.bestHash = genesis.hash;
@@ -485,6 +486,16 @@ class Chain {
             this.db.prepare('INSERT OR REPLACE INTO block_payouts (block_hash, height, to_addr, value) VALUES (?,?,?,?)').run(bloco.hash, height, to, String(v));
           }
         }
+        if (totalTxFees > 0n) {
+          const forgerAddr = String(bloco.forger || bloco.miner || '').toLowerCase();
+          if (forgerAddr && forgerAddr !== 'genesis') {
+            const cur = this.db.prepare('SELECT balance FROM users WHERE address = ?').get(forgerAddr);
+            if (cur) this.db.prepare('UPDATE users SET balance = ?, updated_at = ? WHERE address = ?').run(String(safeBigInt(cur.balance, 0n) + totalTxFees), now, forgerAddr);
+            else this.db.prepare('INSERT OR IGNORE INTO users (address, balance, nonce, created_at, updated_at) VALUES (?,?,?,?,?)').run(forgerAddr, String(totalTxFees), 0, now, now);
+            this.db.prepare('INSERT OR REPLACE INTO block_payouts (block_hash, height, to_addr, value) VALUES (?,?,?,?)').run(bloco.hash, height, forgerAddr, String(totalTxFees));
+            log('info', `[FEES] Block #${height} fees ${totalTxFees} -> forger ${forgerAddr.slice(0, 10)}… (${txs.length} tx, total_fees_units=${totalTxFees})`);
+          }
+        }
         if (isLocalForge) {
           bloco.contract_state_root = computeContractStateRoot(this.db);
           bloco.state_root = computeStateRoot(this.db);
@@ -501,10 +512,10 @@ class Chain {
           }
         }
 
-        this._updateStateTrie(txs, rewardsData, bloco.hash, height);
+        this._updateStateTrie(txs, rewardsData, bloco.hash, height, (bloco.forger || bloco.miner || '').toLowerCase(), totalTxFees);
         this.db.prepare(`INSERT INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
           reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-          total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           height, bloco.hash, bloco.parent_hash, bloco.timestamp, bloco.miner || '',
           bloco.challenge_id || '', bloco.tx_root || '', String(bloco.nonce || '0'),
           bloco.difficulty || '0', String(bloco.target || '0'), bloco.reward_units || '0',
@@ -514,6 +525,7 @@ class Chain {
           String(totalTxFees), gasUsed, bloco.gas_limit || GAS_PARAMS.blockGasLimit, bloco.base_target || String(BigInt(2) ** BigInt(64) / BigInt(5898240)),
           bloco.base_fee || String(this._baseFeeForHeight(height)),
           bloco.contract_state_root || '',
+          bloco.forger || '',
           JSON.stringify(Array.isArray(bloco.rewards) ? bloco.rewards : []),
           bloco.winner_proof && typeof bloco.winner_proof === 'object' ? JSON.stringify(bloco.winner_proof) : ''
         );
@@ -664,7 +676,7 @@ class Chain {
     this.stateTrie.loadFromDB(this.db).catch(e => log('warn', `State trie reload: ${e.message}`));
   }
 
-  _updateStateTrie(txs, rewards, blockHash, height) {
+  _updateStateTrie(txs, rewards, blockHash, height, forger = '', feePayout = 0n) {
     const now = Math.floor(Date.now() / 1000);
     const userUpdateMap = new Map();
     const contractUpdateMap = new Map();
@@ -703,6 +715,14 @@ class Chain {
       }
       if (userUpdateMap.size) this.stateTrie.batchUpdateUsers([...userUpdateMap.values()]);
       if (contractUpdateMap.size) this.stateTrie.batchUpdateContracts([...contractUpdateMap.values()]);
+      if (forger && feePayout > 0n) {
+        const cur = this.db.prepare('SELECT balance, nonce FROM users WHERE address = ?').get(forger);
+        if (cur) {
+          const newBalance = safeBigInt(cur.balance, 0n) + feePayout;
+          userUpdateMap.set(forger, { address: forger, balance: newBalance.toString(), nonce: cur.nonce || 0 });
+          this.stateTrie.batchUpdateUsers([{ address: forger, balance: newBalance.toString(), nonce: cur.nonce || 0 }]);
+        }
+      }
     } catch (e) {
       log('warn', `State trie update: ${e.message}`);
     }
@@ -1068,16 +1088,17 @@ class Chain {
     }
     try {
       this.db.transaction(() => {
-        this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
+this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
           reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-          total_fees_units, gas_used, gas_limit, base_target, contract_state_root, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          total_fees_units, gas_used, gas_limit, base_target, contract_state_root, forger, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           blk.height, blk.hash, blk.parent_hash || '', blk.timestamp || now, blk.miner || '',
           blk.challenge_id || '', blk.tx_root || '', String(blk.nonce || '0'), blk.difficulty || '0',
           String(blk.target || '0'), blk.reward_units || '0', blk.reward_cc || '0', blk.tx_count || 0,
-          String(work), blk.signature || '', blk.generation_signature || ZERO_HASH,
-          blk.proof_digest || '', blk.plot_id || '', blk.state_root || '', blk.origin || 'reorg',
+          String(work), blk.signature || '', blk.generation_signature || ZERO_HASH, blk.proof_digest || '',
+          blk.plot_id || '', blk.state_root || '', blk.origin || 'reorg',
           blk.total_fees_units || '0', blk.gas_used || 0, blk.gas_limit || GAS_PARAMS.blockGasLimit, blk.base_target || String(BigInt(2) ** BigInt(64) / BigInt(5898240)),
           blk.contract_state_root || '',
+          blk.forger || '',
           JSON.stringify(Array.isArray(blk.rewards) ? blk.rewards : []),
           blk.winner_proof && typeof blk.winner_proof === 'object' ? JSON.stringify(blk.winner_proof) : ''
         );

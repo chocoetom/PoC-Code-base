@@ -36,6 +36,7 @@ class SyncEngine {
     this.syncing = false;
     this._lastReorg = 0;
     this._broadcastSeen = new Map();
+    this._lastSeedHeight = new Map();
   }
 
   _rememberBroadcast(key, ttlMs = 30000) {
@@ -59,7 +60,7 @@ class SyncEngine {
         const normalized = new (require('url').URL)(url);
         if (selfHost && normalized.hostname === selfHost) return;
         const data = await fetchJSON(`${url.replace(/\/+$/, '')}/peers`, { timeout: 8 });
-        log('info', `[P2P] Discovered peers from ${url}: ${data && Array.isArray(data.peers) ? data.peers.length + ' peers' : data}`);
+        log('debug', `[P2P] Discovered peers from ${url}: ${data && Array.isArray(data.peers) ? data.peers.length + ' peers' : (() => { try { return JSON.stringify(data); } catch { return String(data); } })()}`);
         if (data && Array.isArray(data.peers) && data.peers.length > 0) {
           for (const p of data.peers) {
             if (!p.url) continue;
@@ -204,7 +205,13 @@ class SyncEngine {
         if (res) {
           if (Array.isArray(res.peers)) {
             for (const p of res.peers) if (p.url) this.peers.add(p.url);
-            log('info', `[P2P] Heartbeat: ${peer.url} reported ${res.peers.length} peers, seed_height=${res.our_height}, node_id=${res.node_id}`)
+            const lastHeight = this._lastSeedHeight.get(peer.url);
+            if (lastHeight !== (res.our_height || 0)) {
+              this._lastSeedHeight.set(peer.url, res.our_height || 0);
+              log('info', `[P2P] Peer ${peer.url} at height ${res.our_height || 0} (${res.peers.length} peers)`);
+            } else {
+              log('debug', `[P2P] Heartbeat: ${peer.url} reported ${res.peers.length} peers, seed_height=${res.our_height}, node_id=${res.node_id}`)
+            }
           }
         }
       } catch { this.peers.fail(peer.url); }
@@ -218,7 +225,7 @@ class SyncEngine {
       try {
         if (selfHost && new (require('url').URL)(seed).hostname === selfHost) return;
         const stats = this.chain.getStats();
-        log('info', `[P2P] Announcing to seed peer ${seed}: height=${this.chain.height}, chain_work=${stats.chain_work}, node_id=${this.NODE_ID}`);
+        log('debug', `[P2P] Announcing to seed peer ${seed}: height=${this.chain.height}, chain_work=${stats.chain_work}, node_id=${this.NODE_ID}`);
         await fetchJSON(`${seed.replace(/\/+$/, '')}/register`, {
           method: 'POST', body: {
             url: this.cfg.nodeUrl, node_id: this.NODE_ID, height: this.chain.height, altura: this.chain.height,

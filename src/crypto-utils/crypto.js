@@ -506,6 +506,7 @@ function hashBlock(bloco) {
     state_root: bloco.state_root || '',
     winner_proof: winnerProofStr,
   };
+  if (bloco.forger) d.forger = bloco.forger;
   return sha256hex(JSON.stringify(d, Object.keys(d).sort()));
 }
 

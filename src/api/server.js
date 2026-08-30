@@ -486,14 +486,35 @@ app.get('/api/state', (req, res) => {
 
     app.post('/api/contracts/deploy', mutationLimiter, async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
-      const { code, sender, private_key, nonce } = req.body || {};
+      const { code, sender, private_key, nonce, value, gas_limit, gas_price, fee } = req.body || {};
       if (!code || !sender) return res.status(400).json({ error: 'code, sender, and private_key required' });
       if (!private_key) return res.status(401).json({ error: 'private_key required to sign deploy tx' });
       try {
-        const blkCtx = (() => { try { const { createBlock } = require('@ethereumjs/block'); return createBlock({ header: { timestamp: BigInt(Math.floor(Date.now() / 1000)), number: BigInt(this.chain.height + 1) } }); } catch { return undefined; } })();
-        const result = await this.smartContracts.CreateSmartContract(code, blkCtx || {}, sender, Number(nonce) || 0);
-        res.json({ ...result, contractAddress: result.contractAddress });
-        log('info', `[SMART CONTRACTS] Deployed contract: sender=${sender}, address=${result.contractAddress}, gasUsed=${result.gasUsed}`);
+        const pkHex = String(private_key).startsWith('0x') ? String(private_key).slice(2) : String(private_key);
+        const pubComp = secpPublicKeyFromPrivate(pkHex);
+        const pubB64 = pubComp.toString('base64');
+        const derivedAddr = pubkeyToAddress(pubComp);
+        const from_addr = (sender || derivedAddr).toLowerCase();
+        const now = Math.floor(Date.now() / 1000);
+        this.db.prepare('INSERT INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?) ON CONFLICT(address) DO UPDATE SET public_key_secp256k1 = excluded.public_key_secp256k1, updated_at = excluded.updated_at').run(from_addr, pubB64, now, now);
+        const user = this.db.prepare('SELECT balance, nonce FROM users WHERE lower(address) = lower(?)').get(from_addr);
+        const txNonce = safeInt(req.body.nonce, user ? (user.nonce || 0) : 0);
+        const gasLimit = safeInt(gas_limit, 3000000);
+        const tx = { from_addr, to_addr: '', value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce: txNonce, fee: fee || String(gasLimit), gas_limit: gasLimit, gas_price: String(gas_price || this.chain._baseFeeForHeight(this.chain.height + 1)), chain_id: this.cfg.chainId || '0', priority_fee: req.body.priority_fee || '0', data: /^0x/i.test(String(code)) ? String(code) : '0x' + String(code) };
+        tx.signature = signTransactionTx(tx, pkHex);
+        tx.hash = evmTxHash(tx);
+        tx.status = 1;
+        const validation = await this.chain.validateTxForMempool(tx);
+        if (!validation.ok) return res.status(400).json({ ok: false, error: validation.motivo });
+        const result = this.chain.addMempoolTx(tx);
+        if (!result.ok) return res.status(400).json({ ok: false, error: result.motivo || 'failed to add transaction' });
+        setImmediate(() => this.sync.broadcastTx(tx));
+        if (this.p2pWsServer) this.p2pWsServer.broadcastTx(tx);
+        const contractAddress = this.smartContracts && typeof this.smartContracts.deriveContractAddress === 'function'
+          ? this.smartContracts.deriveContractAddress(from_addr, txNonce)
+          : null;
+        res.json({ ok: true, mode: 'tx', txHash: tx.hash, hash: tx.hash, from: from_addr, contractAddress, contract_address: contractAddress });
+        log('info', `[SMART CONTRACTS] Deploy tx broadcast: sender=${from_addr}, estimated address=${contractAddress}, tx=${tx.hash}`);
       } catch (e) {
         res.status(400).json({ error: e.code || 'CREATE_FAILED', message: e.message });
       }
@@ -722,7 +743,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       if (!url) return res.status(400).json({ error: 'url required' });
       this.peers.add(url);
       this.peers.seen(url, safeInt(req.body.height, 0), req.body.node_id);
-      log('info', `[P2P] Node announce: url=${url}, height=${req.body.height}, node_id=${req.body.node_id}`);
+      log('debug', `[P2P] Node announce: url=${url}, height=${req.body.height}, node_id=${req.body.node_id}`);
       res.json({ ok: true, our_height: this.chain.height, node_id: this.NODE_ID, peers: this.peers.gossipPeers(10) });
     });
 
@@ -736,7 +757,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       const url = require('../../config/config').normalizeUrl(req.body.url);
       if (!url || !req.body.node_id) return res.status(400).json({ error: 'url and node_id required' });
       this.peers.add(url);
-      log('info', `[P2P] Registering peer: url=${url}, height=${req.body.height}, node_id=${req.body.node_id}`);
+      log('debug', `[P2P] Registering peer: url=${url}, height=${req.body.height}, node_id=${req.body.node_id}`);
       this.peers.seen(url, safeInt(req.body.height, 0), req.body.node_id);
       this.registry.registerNode(url, req.body.node_id, { height: safeInt(req.body.height, 0), chain_work: req.body.chain_work, version: req.body.version, peers: safeInt(req.body.peers, 0) });
       res.json({ ok: true, peers: this.peers.gossipPeers(20), stats: this.registry.getStats(), chain_id: this.cfg.chainId });

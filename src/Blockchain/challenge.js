@@ -175,6 +175,7 @@ class ChallengeManager {
         transactions: mempoolTxs, signature: '', gas_used: mempoolTxs.length * 21000, gas_limit: 30000000,
         base_fee: String(chain._baseFeeForHeight(newHeight)),
         miner_public_key: this.cfg.minerPublicKey || '',
+        forger: String(this.cfg.minerAddress || '').toLowerCase(),
         _from_local_forge: true, rewards: rewardDistribution,
         winner_proof: winnerProof || null,
       };
