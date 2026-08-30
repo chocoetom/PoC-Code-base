@@ -57,6 +57,10 @@ function loadConfig() {
     maxFutureBlockSec: 120,
     difficultyAdjustBlocks: 8192,
     expectedTimePerBlock: 240,
+    genesisBaseTarget: 2 ** 40,
+    btDriftTolerance: 2,
+    baseTargetMin: 2 ** 32,
+    baseTargetMax: 2 ** 48,
     initialTarget: '0x00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF',
     initialReward: '1650000000000000000',
     halvingInterval: 6300000,
@@ -65,6 +69,7 @@ function loadConfig() {
     mempoolTxTtlSec: 3600,
     txRelayHops: 6,
     challengeTtlSec: 60,
+    challengeMinTtlSec: 3600,
     winnerSharePct: 70,
     adminToken: '',
     verifyBlockSignatures: true,
@@ -134,6 +139,9 @@ smartContractsEnabled: false,
   defaults.maxP2POffersPerUser = envInt('MAX_P2P_OFFERS_PER_USER', defaults.maxP2POffersPerUser);
   defaults.p2pOfferTtlSec = envInt('P2P_OFFER_TTL_SEC', defaults.p2pOfferTtlSec);
   defaults.p2pWsPort = envInt('P2P_WS_PORT', defaults.p2pWsPort);
+  defaults.challengeTtlSec = envInt('CHALLENGE_TTL_SEC', defaults.challengeTtlSec);
+  defaults.challengeMinTtlSec = envInt('CHALLENGE_MIN_TTL_SEC', defaults.challengeMinTtlSec);
+  defaults.challengeExpiredGraceSec = envInt('CHALLENGE_EXPIRED_GRACE_SEC', defaults.challengeExpiredGraceSec);
 
   if (defaults.nodeUrl) {
     const self = defaults.nodeUrl.toLowerCase();
