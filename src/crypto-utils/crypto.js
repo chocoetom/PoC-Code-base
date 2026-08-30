@@ -491,7 +491,6 @@ function hashBlock(bloco) {
     winnerProofStr = JSON.stringify(wp);
   }
   const d = {
-    base_target: String(bloco.base_target || '0'),
     contract_state_root: bloco.contract_state_root || '',
     generation_signature: bloco.generation_signature || ZERO_HASH,
     height: bloco.height || 0,
@@ -507,7 +506,6 @@ function hashBlock(bloco) {
     state_root: bloco.state_root || '',
     winner_proof: winnerProofStr,
   };
-  if (bloco.forger) d.forger = bloco.forger;
   return sha256hex(JSON.stringify(d, Object.keys(d).sort()));
 }
 
