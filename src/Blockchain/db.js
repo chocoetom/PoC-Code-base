@@ -24,7 +24,7 @@ function initDB(dbPath, cfg) {
       chain_work TEXT, signature TEXT, generation_signature TEXT,
       proof_digest TEXT, plot_id TEXT, state_root TEXT, origin TEXT,
       total_fees_units TEXT, gas_used INTEGER, gas_limit INTEGER, base_fee TEXT DEFAULT '0',
-      base_target TEXT
+      base_target TEXT, miner_public_key TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_blocks_height ON blocks(height);
     CREATE INDEX IF NOT EXISTS idx_blocks_parent ON blocks(parent_hash);
@@ -185,6 +185,7 @@ function initDB(dbPath, cfg) {
   } catch (e) {}
 
   try { db.prepare('ALTER TABLE blocks ADD COLUMN winner_proof TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare("ALTER TABLE blocks ADD COLUMN miner_public_key TEXT DEFAULT ''").run(); } catch {}
   try { db.prepare('ALTER TABLE mining_challenges ADD COLUMN base_target TEXT').run(); } catch {}
   try { db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch {}
   try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN total_scoops INTEGER DEFAULT 0').run(); } catch {}

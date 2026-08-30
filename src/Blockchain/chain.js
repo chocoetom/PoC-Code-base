@@ -110,7 +110,11 @@ class Chain {
       const key = `${miner}:${plot}:${deadline}`;
       if (seen.has(key)) return { ok: false, motivo: `duplicate reward entry for ${miner.slice(0, 10)}…` };
       seen.add(key);
-      if (subKeys && !subKeys.has(key)) {
+      const wp = bloco.winner_proof;
+      const isWinner = wp && typeof wp === 'object' &&
+        normalizeAddr(wp.miner || '') === miner &&
+        (wp.plot_id || '') === plot && safeInt(wp.deadline, -1) === deadline;
+      if (subKeys && !subKeys.has(key) && !isWinner) {
         log('warn', `reward entry for ${miner} has no matching submission in challenge ${(bloco.challenge_id || '').slice(0, 12)}`);
         return { ok: false, motivo: `reward for ${miner} has no matching proof submission` };
       }
@@ -509,7 +513,7 @@ class Chain {
         this._updateStateTrie(txs, rewardsData, bloco.hash, height, (bloco.forger || bloco.miner || '').toLowerCase(), totalTxFees);
         this.db.prepare(`INSERT INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
           reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-          total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, miner_public_key, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           height, bloco.hash, bloco.parent_hash, bloco.timestamp, bloco.miner || '',
           bloco.challenge_id || '', bloco.tx_root || '', String(bloco.nonce || '0'),
           bloco.difficulty || '0', String(bloco.target || '0'), bloco.reward_units || '0',
@@ -520,6 +524,7 @@ class Chain {
           bloco.base_fee || String(this._baseFeeForHeight(height)),
           bloco.contract_state_root || '',
           bloco.forger || '',
+          bloco.miner_public_key || '',
           JSON.stringify(Array.isArray(bloco.rewards) ? bloco.rewards : []),
           bloco.winner_proof && typeof bloco.winner_proof === 'object' ? JSON.stringify(bloco.winner_proof) : ''
         );
@@ -1084,7 +1089,7 @@ class Chain {
       this.db.transaction(() => {
 this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
           reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-          total_fees_units, gas_used, gas_limit, base_target, contract_state_root, forger, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          total_fees_units, gas_used, gas_limit, base_target, contract_state_root, forger, miner_public_key, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           blk.height, blk.hash, blk.parent_hash || '', blk.timestamp || now, blk.miner || '',
           blk.challenge_id || '', blk.tx_root || '', String(blk.nonce || '0'), blk.difficulty || '0',
           String(blk.target || '0'), blk.reward_units || '0', blk.reward_cc || '0', blk.tx_count || 0,
@@ -1093,6 +1098,7 @@ this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, times
           blk.total_fees_units || '0', blk.gas_used || 0, blk.gas_limit || GAS_PARAMS.blockGasLimit, blk.base_target || String(BigInt(2) ** BigInt(64) / BigInt(5898240)),
           blk.contract_state_root || '',
           blk.forger || '',
+          blk.miner_public_key || '',
           JSON.stringify(Array.isArray(blk.rewards) ? blk.rewards : []),
           blk.winner_proof && typeof blk.winner_proof === 'object' ? JSON.stringify(blk.winner_proof) : ''
         );
