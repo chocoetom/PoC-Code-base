@@ -50,7 +50,7 @@ class Chain {
       reward_units: '0', reward_cc: String(reward), tx_count: 0,
       signature: '', generation_signature: ZERO_HASH,
       proof_digest: '', plot_id: '', state_root,
-      origin: 'genesis', total_fees_units: '0', gas_used: 0, gas_limit: GAS_PARAMS.blockGasLimit, base_target: this._defaultBaseTarget(),
+      origin: 'genesis', total_fees_units: '0', gas_used: 0, gas_limit: GAS_PARAMS.blockGasLimit, base_target: String(this.cfg.genesisBaseTarget ?? this._defaultBaseTarget()),
       transactions: [], rewards: [],
     };
     genesis.hash = hashBlock(genesis);
@@ -234,7 +234,7 @@ class Chain {
   }
 
   _baseTargetForHeight(height) {
-    if (height === 0) return this._defaultBaseTarget();
+    if (height === 0) return String(this.cfg.genesisBaseTarget ?? this._defaultBaseTarget());
     const expectedTime = this.cfg.expectedTimePerBlock || 240;
     const windowSize = Math.min(256, this.cfg.difficultyAdjustBlocks || 64);
     const prev = this.db.prepare('SELECT base_target, timestamp FROM blocks WHERE height = ?').get(height - 1);
@@ -249,14 +249,6 @@ class Chain {
 
     let t = prevTarget;
 
-    const capacityLevel = BigInt(this._defaultBaseTarget());
-    if (capacityLevel > 0n) {
-      const rawPull = (capacityLevel - t) / 4n;
-      const maxStep = t / 2n;
-      const step = rawPull > maxStep ? maxStep : (rawPull < -maxStep ? -maxStep : rawPull);
-      t += step;
-      if (t > capacityLevel * 2n) t = capacityLevel * 2n;
-    }
     const meanSeconds = Math.max(1, actualDuration / window);
     const drift = Math.min(2, Math.max(0.5, meanSeconds / Math.max(1, expectedTime)));
     const movePct = Math.min(0.0625, Math.abs(drift - 1) * 0.125);
@@ -321,16 +313,18 @@ class Chain {
       if (blockTarget === 0n) try { blockTarget = BigInt(this.cfg.initialTarget); } catch { blockTarget = 0n; }
       if (!skipTargetValidation && blockTarget !== expectedTarget) return { ok: false, motivo: `incorrect target: got ${blockTarget}, expected ${expectedTarget}` };
       const expectedBaseTarget = BigInt(this._baseTargetForHeight(height));
-      const blockBaseTarget = BigInt(bloco.base_target || String(BigInt(2) ** BigInt(64) / BigInt(5898240)));
-      if (!skipTargetValidation && expectedBaseTarget > 0n) {
+      if (!bloco.base_target) bloco.base_target = String(expectedBaseTarget);
+      const blockBaseTarget = BigInt(bloco.base_target);
+      if (!skipTargetValidation && expectedBaseTarget > 0n && blockBaseTarget > 0n) {
         const ratio = blockBaseTarget > expectedBaseTarget
           ? blockBaseTarget / expectedBaseTarget
-          : (blockBaseTarget > 0n ? expectedBaseTarget / blockBaseTarget : 0n);
-        if (ratio > 8n) {
-          log('warn', `base_target drift at #${height}: got ${blockBaseTarget}, expected ${expectedBaseTarget} (${Number(ratio)}x)`);
+          : expectedBaseTarget / blockBaseTarget;
+        const maxRatio = BigInt(Math.max(1, safeInt(this.cfg.btDriftTolerance, 2)));
+        if (ratio > maxRatio) {
+          log('warn', `base_target drift at #${height}: got ${blockBaseTarget}, expected ${expectedBaseTarget} (${Number(ratio)}x > ${maxRatio}x)`);
+          return { ok: false, motivo: `incorrect base_target: got ${blockBaseTarget}, expected ${expectedBaseTarget}` };
         }
       }
-      if (!bloco.base_target) bloco.base_target = String(expectedBaseTarget);
     }
     const txs = bloco.transactions || [];
     const [balanceOk, balanceMotivo] = this._validateTxBalances(txs);

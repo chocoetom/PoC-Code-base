@@ -491,6 +491,7 @@ function hashBlock(bloco) {
     winnerProofStr = JSON.stringify(wp);
   }
   const d = {
+    base_target: String(bloco.base_target || '0'),
     contract_state_root: bloco.contract_state_root || '',
     generation_signature: bloco.generation_signature || ZERO_HASH,
     height: bloco.height || 0,

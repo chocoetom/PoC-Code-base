@@ -24,16 +24,22 @@ class ChallengeManager {
     const challengeGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 240) / 2));
     const challengeExpiredGraceSec = Math.max(this.cfg.challengeExpiredGraceSec || 300, (this.cfg.expectedTimePerBlock || 240) * 2);
     const baseTarget = this.chain._baseTargetForHeight(this.chain.height);
+    const withBt = (r) => (r ? { ...r, base_target: (r && r.base_target) || String(baseTarget) } : r);
+
+    const pendingWinner = this.db.prepare(`SELECT * FROM mining_challenges WHERE challenge_id = ? AND forged_block_height IS NULL
+      AND winner_miner IS NOT NULL AND winner_deadline IS NOT NULL AND finalized_at IS NOT NULL
+      AND (finalized_at + winner_deadline) > ?`).get(challengeId, now);
+    if (pendingWinner) return withBt(pendingWinner);
 
     const existing = this.db.prepare('SELECT * FROM mining_challenges WHERE challenge_id = ? AND forged_block_height IS NULL AND expires_at > ?').get(challengeId, now);
-    if (existing) return { ...existing, base_target: existing.base_target || String(baseTarget) };
+    if (existing) return withBt(existing);
 
     const expired = this.db.prepare('SELECT * FROM mining_challenges WHERE challenge_id = ? AND forged_block_height IS NULL AND expires_at <= ? AND challenge_id IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').get(challengeId, now);
     if (expired && (now - expired.expires_at) <= challengeExpiredGraceSec) {
-      return { ...expired, base_target: expired.base_target || String(baseTarget) };
+      return withBt(expired);
     }
 
-    const minTtl = Math.max(this.cfg.challengeTtlSec || 300, (this.cfg.expectedTimePerBlock || 240) * 5);
+    const minTtl = Math.max(this.cfg.challengeTtlSec || 300, this.cfg.challengeMinTtlSec || (this.cfg.expectedTimePerBlock || 240) * 5);
     const ttl = Math.min(Math.max(minTtl, 60), 86400);
     this.db.prepare('DELETE FROM mining_challenges WHERE forged_block_height IS NULL AND (challenge_id != ? OR expires_at + ? < ?) AND challenge_id NOT IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').run(challengeId, challengeGrace, now);
     this.db.prepare('DELETE FROM mining_challenges WHERE challenge_id = ? AND (forged_block_height IS NOT NULL OR expires_at < ?)').run(challengeId, now - challengeGrace);
