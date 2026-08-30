@@ -217,10 +217,18 @@ class ChallengeManager {
       ORDER BY created_at ASC LIMIT 1`).get(now, chain.height);
     if (readyToForge) {
       const ch = readyToForge;
-      if (existingBlock) {
+      const blockUsesThisChallenge = existingBlock && String(existingBlock.challenge_id || '') === String(ch.challenge_id);
+      if (blockUsesThisChallenge) {
         this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(nextHeight, ch.challenge_id);
       } else if (chain.height >= nextHeight) {
-        this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(chain.height, ch.challenge_id);
+        const usedInBlock = this.db.prepare('SELECT 1 FROM blocks WHERE challenge_id = ? AND height >= ? LIMIT 1').get(ch.challenge_id, ch.block_height);
+        if (usedInBlock) {
+          this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(chain.height, ch.challenge_id);
+        } else {
+          log('info', `Deadline elapsed — forging block for challenge ${ch.challenge_id.slice(0, 12)} (d=${ch.winner_deadline}s)`);
+          await this._forgeBlockForChallenge(chain, syncEngine, ch);
+          return;
+        }
       } else {
         log('info', `Deadline elapsed — forging block for challenge ${ch.challenge_id.slice(0, 12)} (d=${ch.winner_deadline}s)`);
         await this._forgeBlockForChallenge(chain, syncEngine, ch);
@@ -237,10 +245,16 @@ class ChallengeManager {
     if (expired) {
       const ch = expired;
       const chId = ch.challenge_id;
-      if (existingBlock) {
+      const blockUsesThisChallenge2 = existingBlock && String(existingBlock.challenge_id || '') === String(chId);
+      if (blockUsesThisChallenge2) {
         this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(nextHeight, chId);
       } else if (chain.height >= nextHeight) {
-        this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(chain.height, chId);
+        const usedInBlock2 = this.db.prepare('SELECT 1 FROM blocks WHERE challenge_id = ? AND height >= ? LIMIT 1').get(chId, ch.block_height);
+        if (usedInBlock2) {
+          this.db.prepare('UPDATE mining_challenges SET forged_block_height = ? WHERE challenge_id = ? AND forged_block_height IS NULL').run(chain.height, chId);
+        } else {
+          await this._forgeBlockForChallenge(chain, syncEngine, ch);
+        }
       } else {
         await this._forgeBlockForChallenge(chain, syncEngine, ch);
       }

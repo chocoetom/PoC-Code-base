@@ -193,7 +193,7 @@ class EthereumRPC {
     const to = normalizeAddr(txObj.to);
     const from = normalizeAddr(txObj.from || ZERO_ADDRESS);
     const data = normalizeHex(txObj.data || '0x');
-    const value = parseQuantity(txObj.value == null ? 0 : txObj.value, 'value');
+    const value = txObj.value != null ? parseQuantity(txObj.value, 'value') : 0n;
     if (!this.smartContracts) return '0x';
     if (!to) return '0x';
     if (!isValidAddress(to)) return '0x';

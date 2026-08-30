@@ -14,19 +14,11 @@ function keccakBytes(buf) {
   return Buffer.from(keccak256(hex).replace(/^0x/i, ''), 'hex');
 }
 
-function addByteToBloom(bloom, byte) {
-  const bit = byte & 0x07;
-  const byteIdx = (31 - (byte >> 3)) * 8 + (7 - bit);
-  const bytePos = byteIdx >> 3;
-  const bitPos = byteIdx & 7;
-  bloom[bytePos] |= (1 << bitPos);
-}
-
-// Insert the triple hash (low/mid/high bits 0-10) of a 32-byte value.
 function addToBloom(bloom, value) {
   const h = keccakBytes(value);
   for (let i = 0; i < 3; i++) {
-    addByteToBloom(bloom, h[2 + i * 2]);
+    const m = ((h[2 * i] << 8) | h[2 * i + 1]) & 2047;
+    bloom[255 - (m >> 3)] |= (1 << (m & 7));
   }
 }
 

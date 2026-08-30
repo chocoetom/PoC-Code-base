@@ -4,6 +4,8 @@ const GAS_PARAMS = {
   gasPerByteNonZero: 16,
   initialBaseFee: 10 ** 9,
   blockGasLimit: 10500000,
+  initialSmartContractGasLimit: 10000000,
+  initialSmartContractGasPrice: 10 ** 9,
 };
 
 function estimateIntrinsicGas(tx) {

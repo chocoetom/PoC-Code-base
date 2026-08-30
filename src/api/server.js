@@ -490,7 +490,8 @@ app.get('/api/state', (req, res) => {
       if (!code || !sender) return res.status(400).json({ error: 'code, sender, and private_key required' });
       if (!private_key) return res.status(401).json({ error: 'private_key required to sign deploy tx' });
       try {
-        const result = await this.smartContracts.CreateSmartContract(code, {}, sender, Number(nonce) || 0);
+        const blkCtx = (() => { try { const { createBlock } = require('@ethereumjs/block'); return createBlock({ header: { timestamp: BigInt(Math.floor(Date.now() / 1000)), number: BigInt(this.chain.height + 1) } }); } catch { return undefined; } })();
+        const result = await this.smartContracts.CreateSmartContract(code, blkCtx || {}, sender, Number(nonce) || 0);
         res.json({ ...result, contractAddress: result.contractAddress });
         log('info', `[SMART CONTRACTS] Deployed contract: sender=${sender}, address=${result.contractAddress}, gasUsed=${result.gasUsed}`);
       } catch (e) {
@@ -829,6 +830,7 @@ const validation = await this.chain.validateTxForMempool(tx);
     let port = this.cfg.port;
 
     // ========= ETHEREUM JSON RPC ENDPOINTS HERE! ==============
+    
     try {
       const { EthereumRPC } = require('../json-rpc/ethereum-rpc');
       this.ethRpc = new EthereumRPC(this.cfg, this.db, this.chain, this.sync, this.peers, this.smartContracts, this.NODE_ID);
