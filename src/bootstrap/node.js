@@ -88,6 +88,7 @@ class ChocoNode {
     }
 
     this.chain = new Chain(this.db, cfg);
+    this.chain.optionalModules = this.optionalModules;
     if (this.smartContracts) this.chain.setContractExecutor(this.smartContracts);
     this.peers = new PeerManager(this.db, cfg);
     for (const seed of (cfg.seedPeers || [])) this.peers.add(seed);

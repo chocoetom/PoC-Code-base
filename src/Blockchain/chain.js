@@ -3,6 +3,7 @@ const { IncrementalStateRoot } = require('./state-trie');
 const { hashBlockAsync, verifySignatureAsync, canonicalTxMessageAsync } = require('../utils/worker-pool');
 const { estimateIntrinsicGas, nextBaseFee, GAS_PARAMS } = require('../consensus/gas');
 const { log } = require('../../config/config');
+const { runHook } = require('../bootstrap/optional');
 const { createBlock } = require('@ethereumjs/block');
 const { bytesToHex } = require('@ethereumjs/util');
 const BN = require('bn.js');
@@ -17,6 +18,10 @@ class Chain {
     this.height = 0;
     this.bestHash = ZERO_HASH;
     this.contracts = null;
+    this.optionalModules = null;
+    this._lastNotifiedHeight = -1;
+    this._acceptBurst = [];
+    this._bulkSyncWarned = false;
     try { this.db.prepare('ALTER TABLE transactions ADD COLUMN block_hash TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN base_target TEXT').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN contract_state_root TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
@@ -547,11 +552,33 @@ class Chain {
         this._selectTip();
       })();
       if (height > 0) log('info', `Block #${height} accepted [${bloco.hash.slice(0, 10)}] from ${blockOrigin} (miner: ${(bloco.miner || '').slice(0, 10)}…)`);
+      this._maybeNotifyNewBlock(bloco, isLocalForge);
       return { ok: true, motivo: 'block added', height, hash: bloco.hash };
     } catch (e) {
       if (contractExec) { try { contractExec.rollback(); } catch {} }
       return { ok: false, motivo: e.message || 'database error' };
     }
+  }
+
+  _maybeNotifyNewBlock(bloco, isLocalForge) {
+    if (isLocalForge) return;
+    if (!this.optionalModules) return;
+    const height = bloco ? bloco.height : 0;
+    if (height <= this._lastNotifiedHeight || this.bestHash !== bloco.hash) return;
+    const now = Date.now();
+    this._acceptBurst.push(now);
+    const cutoff = now - 20000;
+    this._acceptBurst = this._acceptBurst.filter((t) => t >= cutoff);
+    if (this._acceptBurst.length > 8) {
+      if (!this._bulkSyncWarned) {
+        this._bulkSyncWarned = true;
+        log('info', `[DISCORD] bulk sync detected (~${this._acceptBurst.length} blocks in 20s) — suppressing per-block notifications`);
+      }
+      return;
+    }
+    this._bulkSyncWarned = false;
+    this._lastNotifiedHeight = height;
+    runHook(this.optionalModules, 'notifyNewBlock', bloco, this.cfg);
   }
 
   _isCreateTx(tx) { return !!(tx && !tx.to_addr && tx.data); }
