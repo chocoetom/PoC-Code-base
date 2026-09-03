@@ -66,14 +66,22 @@ class Chain {
     return { poh_hash: s.poh_hash, poh_sequence_count: s.poh_sequence_count, poh_count: s.poh_sequence_count };
   }
 
-  _verifyPohSegment(parent, bloco) {
+  async _verifyPohSegment(parent, bloco) {
     const poh = this.poh || require('../crypto-utils/poh');
     const segCount = safeInt(bloco.poh_sequence_count, -1);
     if (segCount < 0) return { ok: false, motivo: 'invalid poh_sequence_count' };
     const parentPoH = parent.poh_hash || ZERO_HASH;
     const blockPoH = bloco.poh_hash || '';
     if (!blockPoH) return { ok: false, motivo: 'block missing poh_hash' };
-    if (!poh.pohVerify(parentPoH, blockPoH, segCount)) {
+    let ok;
+    if (this.pohEngine && this.pohEngine.worker) {
+      const t0 = Date.now();
+      ok = await this.pohEngine.verify(parentPoH, blockPoH, segCount);
+      log('debug', `[PoH] _verifyPohSegment #${bloco.height} segCount=${segCount} took ${Date.now()-t0}ms`);
+    } else {
+      ok = poh.pohVerify(parentPoH, blockPoH, segCount);
+    }
+    if (!ok) {
       return { ok: false, motivo: `invalid PoH segment h=${bloco.height}: expected SHA^${segCount}(${parentPoH.slice(0, 10)}…)= ${blockPoH.slice(0, 10)}…` };
     }
     return { ok: true };
@@ -331,6 +339,7 @@ class Chain {
     const blockOrigin = isLocalForge ? 'local' : 'network';
     delete bloco._from_local_forge;
     const height = bloco.height;
+    log('debug', `[PoH] addBlock ENTER height=${height} isLocal=${isLocalForge} skipPoh=${opts.skipPohValidation}`);
     if (typeof height !== 'number') return { ok: false, motivo: 'height missing' };
     if (!bloco.hash || !bloco.parent_hash) return { ok: false, motivo: 'hash or parent_hash missing' };
     if (this.db.prepare('SELECT 1 FROM blocks WHERE hash = ?').get(bloco.hash)) return { ok: true, motivo: 'already known' };
@@ -374,10 +383,14 @@ class Chain {
         }
       }
 
-      const pohCheck = this._verifyPohSegment(parent, bloco);
-      if (!pohCheck.ok) {
-        if (opts.skipPohValidation) log('warn', `[PoH] skipped segment validation at #${height}: ${pohCheck.motivo}`);
-        else return { ok: false, motivo: pohCheck.motivo };
+      if (!isLocalForge || this.cfg.forceRemotePohVerify) {
+        const pohCheck = await this._verifyPohSegment(parent, bloco);
+        if (!pohCheck.ok) {
+          if (opts.skipPohValidation) log('warn', `[PoH] skipped segment validation at #${height}: ${pohCheck.motivo}`);
+          else return { ok: false, motivo: pohCheck.motivo };
+        }
+      } else {
+        log('debug', `[PoH] skip pohVerify for local forge #${height} (segCount=${safeInt(bloco.poh_sequence_count, -1)})`);
       }
       if (!opts.skipPohValidation && bloco.poh_hash) {
         const parentCount = safeInt(parent.poh_count, 0);

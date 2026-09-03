@@ -12,6 +12,11 @@ class ChallengeManager {
     this.cfg = cfg || {};
     this.chain = chain;
     this.optionalModules = optionalModules;
+    // Guarda de reentrância: impede que finalizeExpiredChallenges (interval de 5s)
+    // dispare forges sobrepostos do mesmo challenge enquanto um ainda está rodando
+    // (ex: preso no worker de hashing), o que causava rejeições "competing block
+    // not better than incumbent" após o bloco já ter sido forjado.
+    this._forging = new Set();
   }
 
   getOrCreate() {
@@ -112,6 +117,12 @@ class ChallengeManager {
 
   _selectValidMempoolTxs(chain, maxCount) {
     const candidates = chain.getMempoolForBlock(maxCount);
+    candidates.sort((a, b) => {
+      const sa = String(a.from_addr || '').toLowerCase();
+      const sb = String(b.from_addr || '').toLowerCase();
+      if (sa !== sb) return sa < sb ? -1 : 1;
+      return safeInt(a.nonce, 0) - safeInt(b.nonce, 0);
+    });
     log('info', `[TX] mempool candidates: ${candidates.length}`);
     const good = [];
     const projectedNonce = {};
@@ -161,9 +172,12 @@ class ChallengeManager {
       const parent = chain.getBlock(chain.height);
       if (parent && now <= parent.timestamp) now = parent.timestamp + 1;
       log('info', `[TX] _forgeBlock called for height ${newHeight}, chain.height=${chain.height}`);
+      log('debug', `[FORGE] step getPohSample start`);
       const pohSample = await chain.getPohSample();
+      log('debug', `[FORGE] step getPohSample done: seq=${pohSample.poh_sequence_count}`);
       const parentPoHCount = parent ? safeInt(parent.poh_count, 0) : 0;
       const pohDelta = Math.max(0, safeInt(pohSample.poh_sequence_count, 0) - parentPoHCount);
+      log('debug', `[FORGE] delta poh: parentPoHCount=${parentPoHCount} pohDelta=${pohDelta}`);
       const mempoolTxs = this._selectValidMempoolTxs(chain, 100);
       log('info', `[TX] _forgeBlock: ${mempoolTxs.length} txs selected for block #${newHeight}`);
       const txHashes = mempoolTxs.map(t => t.hash || hashTransaction(t));
@@ -194,6 +208,7 @@ class ChallengeManager {
         block.signature = signMessage(blockMessage(block), this.cfg.minerPrivateKey);
       }
       block.hash = hashBlock(block);
+      log('debug', `[FORGE] block #${newHeight} built, hash=${String(block.hash).slice(0,10)}, state_root=${String(block.state_root).slice(0,10)}`);
       return block;
     } catch (e) { log('error', `forge block error: ${e.message}`); return null; }
   }
@@ -273,6 +288,17 @@ class ChallengeManager {
   }
 
   async _forgeBlockForChallenge(chain, syncEngine, challenge) {
+    const chId = challenge && challenge.challenge_id;
+    if (!chId || this._forging.has(chId)) return null;
+    this._forging.add(chId);
+    try {
+      return await this._forgeBlockForChallengeUnsafe(chain, syncEngine, challenge);
+    } finally {
+      this._forging.delete(chId);
+    }
+  }
+
+  async _forgeBlockForChallengeUnsafe(chain, syncEngine, challenge) {
     try {
       const nextHeight = chain.height + 1;
       const existing = this.db.prepare('SELECT hash, challenge_id FROM blocks WHERE height = ? LIMIT 1').get(nextHeight);
