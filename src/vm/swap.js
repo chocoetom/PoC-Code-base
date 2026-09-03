@@ -71,7 +71,7 @@ async function runSwap() {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-swap-'));
   const ccDb = initDB(path.join(tmpDir, 'cc.db'), {});
-  const chain = new Chain(ccDb, { maxFutureBlockSec: 60, minGasPrice: 10 ** 9, expectedTimePerBlock: 240 });
+  const chain = new Chain(ccDb, { maxFutureBlockSec: 60, minGasPrice: 10 ** 9, expectedTimePerBlock: 60 });
   SC.setDatabase(ccDb);
   chain.setContractExecutor(SC);
   const now = Math.floor(Date.now() / 1000);

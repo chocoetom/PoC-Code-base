@@ -155,7 +155,7 @@ class SparseMerkleTrie {
     const newTrie = new SparseMerkleTrie();
     newTrie.leaves = new Map(this.leaves);
     newTrie.root = this.root;
-    newTrie._dirty = false; // root is up-to-date at clone time
+    newTrie._dirty = false;
     return newTrie;
   }
 }
@@ -189,7 +189,6 @@ class IncrementalStateRoot {
       const leaf = sha256hex(`${key}:${u.balance}:${u.nonce}`);
       this.userTrie.set(key, leaf);
     }
-    // force root recomputation once after all updates
     this.userTrie.getRoot();
   }
 

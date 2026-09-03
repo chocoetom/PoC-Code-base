@@ -1,7 +1,10 @@
 const path = require('path');
-const { safeInt, hashTransaction, pubkeyToAddress, secpPublicKeyFromPrivate, calculateMiningReward, verifySignature, plotRegisterMessage, signTransactionTx, evmTxHash } = require('../crypto-utils/crypto');
+const crypto = require('crypto');
+const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, secpPublicKeyFromPrivate, privateKeyToAddress, toChecksumAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage, verifySignature, plotRegisterMessage, signTransactionTx, evmTxHash, recoverTransactionSender, signatureToHex, vrfProve, vrfVerify } = require('../crypto-utils/crypto');
 const { log, getLogBuffer } = require('../../config/config');
 const { createPlotFile, MAX_PLOT_GB } = require('../crypto-utils/plot');
+const { makeLocalAnnouncement, verifyAnnouncement } = require('../crypto-utils/plot-capacity');
+const { estimateIntrinsicGas, minimumFee } = require('../consensus/gas');
 
 const rateLimitStore = new Map();
 function rateLimit(options = {}) {
@@ -133,6 +136,8 @@ class Server {
 
     app.get('/', (req, res) => {
       const stats = this.chain.getStats();
+      const tip = this.chain.getBlock(this.chain.height);
+      const ns = this.registry.getStats();
       res.json({
         ...stats, chain_id: this.cfg.chainId, chain_name: this.cfg.chainName,
         symbol: this.cfg.symbol, current_reward: calculateMiningReward(this.chain.height + 1, this.cfg).toString(),
@@ -147,6 +152,8 @@ class Server {
 
     app.get('/api/stats', (req, res) => {
       const stats = this.chain.getStats();
+      const tip = this.chain.getBlock(this.chain.height);
+      const ns = this.registry.getStats();
       res.json({
         ...stats, chain_id: this.cfg.chainId, chain_name: this.cfg.chainName,
         symbol: this.cfg.symbol, current_reward: calculateMiningReward(this.chain.height + 1, this.cfg).toString(),
@@ -158,6 +165,39 @@ class Server {
         version: this.cfg.version,
       });
     });
+
+app.get('/api/state', (req, res) => {
+  const running = !!this.chain;
+  const config = this.cfg;
+  const wallets = this.db.prepare('SELECT address, balance, nonce FROM users ORDER BY address').all();
+  const node = running ? this.chain.getStats() : null;
+  res.json({
+    running,
+    config: {
+      port: config.port,
+      minerAddress: config.minerAddress,
+      chainId: config.chainId,
+      chainName: config.chainName,
+      symbol: config.symbol
+    },
+    wallets: wallets.map(w => ({
+      address: w.address,
+      balance: w.balance,
+      nonce: w.nonce
+    })),
+    miner_unlocked: !!config.minerPrivateKey,
+    node: node ? {
+      height: node.height,
+      hash: node.hash,
+      peers: node.blocks ? node.blocks.length : 0
+    } : null,
+    network_storage: {
+      local: { plots_count: node ? node.plots_count : 0, capacidade_gb: node ? Number(node.capacidade_gb || 0) : 0 },
+      peers: []
+    },
+    data_dir: config.dataDir
+  });
+});
 
     app.get('/api/blocks', (req, res) => {
       const from = parseInt(req.query.from) || 0;
@@ -180,6 +220,57 @@ class Server {
       const b = this.chain.getBlock(req.params.heightOrHash);
       if (!b) return res.status(404).json({ error: 'block not found' });
       res.json(b);
+    });
+
+    app.get('/api/zkp/proofs', (req, res) => {
+      const rows = this.db.prepare('SELECT id, start_height, end_height, block_count, commitment, verified, created_at FROM zkp_proofs ORDER BY end_height DESC').all();
+      res.json({ proofs: rows });
+    });
+    app.get('/api/zkp/proof/:id', (req, res) => {
+      const row = this.db.prepare('SELECT * FROM zkp_proofs WHERE id = ?').get(parseInt(req.params.id, 10) || -1);
+      if (!row) return res.status(404).json({ error: 'proof not found' });
+      let proof = null;
+      try { proof = require('../crypto-utils/zkp').decodeProof(row.proof); } catch (e) { proof = null; }
+      res.json({ id: row.id, start: row.start_height, end: row.end_height, commitment: row.commitment, proof });
+    });
+    app.get('/api/zkp/latest', (req, res) => {
+      if (!this.chain.zkp) return res.status(404).json({ error: 'zkp disabled' });
+      const row = this.chain.zkp.getLatest();
+      if (!row) return res.status(404).json({ error: 'no proofs yet' });
+      let proof = null;
+      try { proof = require('../crypto-utils/zkp').decodeProof(row.proof); } catch (e) { proof = null; }
+      res.json({ id: row.id, start: row.start_height, end: row.end_height, commitment: row.commitment, proof });
+    });
+
+    app.get('/api/snapshot', (req, res) => {
+      if (!this.chain.snapsync) return res.status(404).json({ error: 'snapsync disabled' });
+      res.json({ snapshots: this.chain.snapsync.listMeta() });
+    });
+    app.get('/api/snapshot/latest', (req, res) => {
+      if (!this.chain.snapsync) return res.status(404).json({ error: 'snapsync disabled' });
+      const snapObj = this.chain.snapsync.loadLatestSnapshot();
+      if (!snapObj) return res.status(404).json({ error: 'no snapshots yet' });
+      res.json(snapObj);
+    });
+    app.get('/api/snapshot/:height', (req, res) => {
+      if (!this.chain.snapsync) return res.status(404).json({ error: 'snapsync disabled' });
+      const height = parseInt(req.params.height, 10) || 0;
+      const meta = this.chain.snapsync.getMeta(height);
+      if (!meta) return res.status(404).json({ error: 'snapshot not found' });
+      const full = (req.query.full === '1' || req.query.full === 'true');
+      if (full) {
+        const snapObj = this.chain.snapsync.loadSnapshot(height);
+        if (!snapObj) return res.status(404).json({ error: 'snapshot data missing on disk' });
+        return res.json(snapObj);
+      }
+      res.json(meta);
+    });
+    app.post('/api/snapshot/generate', requireAdmin, (req, res) => {
+      if (!this.chain.snapsync) return res.status(404).json({ error: 'snapsync disabled' });
+      const height = parseInt((req.body && req.body.height) || this.chain.height, 10) || 0;
+      const meta = this.chain.snapsync.generateAtBoundary(height);
+      if (!meta) return res.status(400).json({ error: 'height is not a clean 8,192 boundary or snapshot exists' });
+      res.json(meta);
     });
 
     app.get('/api/plots', (req, res) => {
@@ -243,33 +334,33 @@ class Server {
         const gasPrice = gas_price || this.chain._baseFeeForHeight(this.chain.height + 1);
         const defaultGas = hasData ? 3000000 : 21000;
         const gasLimit = gas_limit || defaultGas;
-        const fee = (gasLimit === 21000) ? '21000' : String(gasLimit);
-        
         const tx = {
           from_addr: normalizedFrom,
           to_addr: to_addr || '',
           value: valueWei,
           nonce,
-          fee,
+          fee: '',
           gas_limit: gasLimit,
           gas_price: String(gasPrice),
           chain_id: chain_id || this.cfg.chainId || '0',
           priority_fee: priority_fee || '0'
         };
         if (hasData) tx.data = String(data);
+        const intrinsic = estimateIntrinsicGas(tx);
+        if (gasLimit < intrinsic) tx.gas_limit = intrinsic;
+        const estimatedFee = minimumFee(tx, this.chain._baseFeeForHeight(this.chain.height + 1));
+        tx.fee = String(estimatedFee);
         
         const txHash = evmTxHash(tx);
         
-        const estimatedGas = require('../crypto-utils/crypto').estimateIntrinsicGas ? require('../crypto-utils/crypto').estimateIntrinsicGas(tx) : gasLimit;
         const currentBaseFee = BigInt(this.chain._baseFeeForHeight(this.chain.height + 1));
-        const estimatedFee = (BigInt(gasLimit) * currentBaseFee).toString();
         
         res.json({
           ok: true,
           transaction: tx,
           sign_message: '0x' + (require('../crypto-utils/crypto').evmTxDigest ? require('../crypto-utils/crypto').evmTxDigest(tx) : ''),
           tx_hash: txHash,
-          estimated_gas: estimatedGas,
+          estimated_gas: intrinsic,
           estimated_fee: estimatedFee,
           gas_price: String(currentBaseFee),
           balance: user ? user.balance : '0',
@@ -379,11 +470,27 @@ class Server {
       try {
         const size = parseFloat(size_gb);
         if (size <= 0 || size > MAX_PLOT_GB) return res.status(400).json({ error: `invalid size_gb (1-${MAX_PLOT_GB} GB)` });
-        const plotPath = path.join(plot_dir || this.cfg.plotsDir, `${plot_id}.plot`);
+        if (!/^[A-Za-z0-9_-]{1,80}$/.test(String(plot_id))) return res.status(400).json({ error: 'invalid plot_id (alphanumeric, dash, underscore only)' });
+        const baseDir = path.resolve(plot_dir || this.cfg.plotsDir || '.');
+        const target = path.resolve(baseDir, `${plot_id}.plot`);
+        if (target !== baseDir && !target.startsWith(baseDir + path.sep)) return res.status(400).json({ error: 'plot path escapes plots directory' });
+        const plotPath = target;
         const plotInfo = createPlotFile(plotPath, plot_id, address, size);
-        this.db.prepare('INSERT OR IGNORE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, created_at) VALUES (?,?,?,?,?)').run(plot_id, address, plotInfo.merkleRoot, size, Math.floor(Date.now() / 1000));
+        let vrfPublicKey = '', vrfOutput = '', vrfProof = '';
+        let vrfVerified = 0;
+        if (this.cfg.minerPrivateKey) {
+          try {
+            const gen = vrfProve(this.cfg.minerPrivateKey, plot_id, plotInfo.merkleRoot);
+            vrfPublicKey = gen.public_key;
+            vrfOutput = gen.output;
+            vrfProof = gen.proof;
+            vrfVerified = 1;
+          } catch (e) { log('warn', `[MINERS] VRF generation failed for plot ${plot_id}: ${e.message}`); }
+        }
+        this.db.prepare('INSERT OR IGNORE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, vrf_public_key, vrf_output, vrf_proof, vrf_verified, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+          .run(plot_id, address, plotInfo.merkleRoot, size, vrfPublicKey, vrfOutput, JSON.stringify(vrfProof || ''), vrfVerified, Math.floor(Date.now() / 1000));
         log('info', `[MINERS] Created plot: miner=${address}, plot_id=${plot_id}, size_gb=${size}, merkle_root=${plotInfo.merkleRoot}, path=${plotPath}`);
-        res.json({ ok: true, plot_id, merkle_root: plotInfo.merkleRoot, size_gb: size, path: plotPath });
+        res.json({ ok: true, plot_id, merkle_root: plotInfo.merkleRoot, size_gb: size, path: plotPath, vrf_verified: vrfVerified === 1 });
       } catch (e) { res.status(500).json({ error: e.message }); }
     });
     
@@ -408,7 +515,7 @@ class Server {
     });
     // the new way to register plots, requires the miner to sign the registration with their private key, so that the node can verify the plot is being registered by the actual miner.
     app.post('/api/poc/register_plot_public', mutationLimiter, (req, res) => {
-      const { miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature } = req.body || {};
+      const { miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature, vrf } = req.body || {};
       if (!miner || !plot_id || !merkle_root || size_gb == null || total_scoops == null || !public_key || !signature) {
         return res.status(400).json({ error: 'miner, plot_id, merkle_root, size_gb, total_scoops, public_key, signature required' });
       }
@@ -428,17 +535,84 @@ class Server {
       } catch (e) {
         return res.status(400).json({ error: `invalid public key or signature encoding: ${e.message}` });
       }
+      let vrfPublicKey = (vrf && vrf.public_key) || '';
+      let vrfOutput = (vrf && vrf.output) || '';
+      let vrfProof = (vrf && vrf.proof) || '';
+      let vrfVerified = 0;
+      const isOwnPlot = this.cfg.minerAddress && normalizedAddress === String(this.cfg.minerAddress).toLowerCase();
+      if (isOwnPlot && this.cfg.minerPrivateKey) {
+        try {
+          const gen = vrfProve(this.cfg.minerPrivateKey, plot_id, merkle_root);
+          vrfPublicKey = gen.public_key;
+          vrfOutput = gen.output;
+          vrfProof = gen.proof;
+          vrfVerified = 1;
+        } catch (e) { log('warn', `[MINERS] VRF generation failed for own plot: ${e.message}`); }
+      } else if (vrfPublicKey && vrfOutput && vrfProof) {
+        try {
+          vrfVerified = vrfVerify(String(vrfPublicKey), merkle_root, String(vrfOutput), vrfProof) ? 1 : 0;
+          if (!vrfVerified) return res.status(400).json({ error: 'invalid VRF capacity commitment' });
+        } catch { return res.status(400).json({ error: 'invalid VRF capacity commitment' }); }
+      }
       const now = Math.floor(Date.now() / 1000);
-      this.db.prepare('INSERT OR REPLACE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, total_scoops, created_at) VALUES (?,?,?,?,?,?)')
-        .run(plot_id, normalizedAddress, merkle_root, parsedSize, safeInt(total_scoops, 0), now);
+      this.db.prepare('INSERT OR REPLACE INTO plot_commitments (plot_id, miner, merkle_root, size_gb, total_scoops, vrf_public_key, vrf_output, vrf_proof, vrf_verified, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(plot_id, normalizedAddress, merkle_root, parsedSize, safeInt(total_scoops, 0), vrfPublicKey, vrfOutput, JSON.stringify(vrfProof || ''), vrfVerified, now);
       const existingUser = this.db.prepare('SELECT address FROM users WHERE lower(address) = lower(?)').get(normalizedAddress);
       if (!existingUser) {
         this.db.prepare('INSERT INTO users (address, public_key_secp256k1, balance, nonce, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(normalizedAddress, public_key, now, now);
       } else {
         this.db.prepare('UPDATE users SET public_key_secp256k1 = ?, updated_at = ? WHERE lower(address) = lower(?)').run(public_key, now, normalizedAddress);
       }
-      log('info', `[MINERS] Plot registered (signed): miner=${normalizedAddress}, plot_id=${plot_id}, size_gb=${size_gb}, merkle_root=${merkle_root}`);
-      res.json({ ok: true, plot_id, miner: normalizedAddress });
+      log('info', `[MINERS] Plot registered (signed, VRF=${vrfVerified ? 'verified' : 'none'}): miner=${normalizedAddress}, plot_id=${plot_id}, size_gb=${size_gb}, merkle_root=${merkle_root}`);
+      res.json({ ok: true, plot_id, miner: normalizedAddress, vrf_verified: vrfVerified === 1 });
+    });
+
+    app.post('/api/poc/verify_plot', mutationLimiter, (req, res) => {
+      const ann = req.body || {};
+      const result = verifyAnnouncement(ann, { requireVrf: true, requireSig: true });
+      res.json({ ok: result.ok, verified: result.ok, motivo: result.motivo || null });
+    });
+
+    app.post('/api/plots/announce', p2pLimiter, (req, res) => {
+      const { node_url, plots } = req.body || {};
+      if (!Array.isArray(plots) || plots.length === 0) return res.json({ ok: true, accepted: 0 });
+      if (plots.length > 5000) return res.status(400).json({ error: 'too many announcements' });
+      const originUrl = node_url || this.cfg.nodeUrl || '';
+      const selfHost = (() => { try { return this.cfg.nodeUrl ? new (require('url').URL)(this.cfg.nodeUrl).hostname : null; } catch { return null; } })();
+      const now = Math.floor(Date.now() / 1000);
+      let accepted = 0;
+      const invalid = [];
+      for (const ann of plots) {
+        try {
+          if (selfHost && originUrl && new (require('url').URL)(originUrl).hostname === selfHost) continue; // ignore self
+        } catch {}
+        const check = verifyAnnouncement(ann, { requireVrf: true, requireSig: true });
+        if (!check.ok) { invalid.push(ann.plot_id || null); continue; }
+        this.db.prepare('INSERT OR IGNORE INTO peer_plot_commitments (plot_id, miner, merkle_root, size_gb, node_url, vrf_public_key, vrf_output, vrf_proof, signature, public_key, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+          .run(String(ann.plot_id), String(ann.miner).toLowerCase(), String(ann.merkle_root), parseFloat(ann.size_gb) || 0, originUrl,
+            String(ann.vrf_public_key || ''), String(ann.vrf_output || ''), JSON.stringify(ann.vrf_proof || ''),
+            String(ann.signature || ''), String(ann.public_key || ''), now);
+        accepted++;
+      }
+      if (accepted > 0) log('info', `[P2P] Received ${accepted}/${plots.length} verified plot announcements from ${originUrl || req.ip}`);
+      res.json({ ok: true, accepted, rejected: invalid.length, invalid });
+    });
+
+    app.get('/api/plots/announced', (req, res) => {
+      const rows = this.db.prepare('SELECT plot_id, miner, merkle_root, size_gb, total_scoops, vrf_public_key, vrf_output, vrf_proof FROM plot_commitments').all();
+      const plots = [];
+      for (const plot of rows) {
+        if (!plot.merkle_root) continue;
+        let vrfProof = plot.vrf_proof;
+        try { vrfProof = plot.vrf_proof ? JSON.parse(plot.vrf_proof) : ''; } catch {}
+        const ann = makeLocalAnnouncement(plot, this.cfg, {
+          public_key: plot.vrf_public_key || '',
+          output: plot.vrf_output || '',
+          proof: vrfProof,
+        });
+        plots.push(ann);
+      }
+      res.json({ node_url: this.cfg.nodeUrl || '', node_id: this.NODE_ID, plots });
     });
 
     const contractsEnabled = () => !!this.cfg.smartContractsEnabled && this.smartContracts;
@@ -460,7 +634,7 @@ class Server {
 
     app.post('/api/contracts/deploy', mutationLimiter, async (req, res) => {
       if (!contractsEnabled()) return contractsDisabled(res);
-      const { code, sender, private_key, value, gas_limit, gas_price, fee } = req.body || {};
+      const { code, sender, private_key, nonce, value, gas_limit, gas_price, fee } = req.body || {};
       if (!code || !sender) return res.status(400).json({ error: 'code, sender, and private_key required' });
       if (!private_key) return res.status(401).json({ error: 'private_key required to sign deploy tx' });
       try {
@@ -474,7 +648,10 @@ class Server {
         const user = this.db.prepare('SELECT balance, nonce FROM users WHERE lower(address) = lower(?)').get(from_addr);
         const txNonce = safeInt(req.body.nonce, user ? (user.nonce || 0) : 0);
         const gasLimit = safeInt(gas_limit, 3000000);
-        const tx = { from_addr, to_addr: '', value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce: txNonce, fee: fee || String(gasLimit), gas_limit: gasLimit, gas_price: String(gas_price || this.chain._baseFeeForHeight(this.chain.height + 1)), chain_id: this.cfg.chainId || '0', priority_fee: req.body.priority_fee || '0', data: /^0x/i.test(String(code)) ? String(code) : '0x' + String(code) };
+        const dataHex = /^0x/i.test(String(code)) ? String(code) : '0x' + String(code);
+        const txNoSig = { from_addr, to_addr: '', value: '', nonce: txNonce, gas_limit: gasLimit, data: dataHex };
+        const defaultFee = fee || String(minimumFee(txNoSig, this.chain._baseFeeForHeight(this.chain.height + 1)));
+        const tx = { from_addr, to_addr: '', value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce: txNonce, fee: defaultFee, gas_limit: gasLimit, gas_price: String(gas_price || this.chain._baseFeeForHeight(this.chain.height + 1)), chain_id: this.cfg.chainId || '0', priority_fee: req.body.priority_fee || '0', data: dataHex };
         tx.signature = signTransactionTx(tx, pkHex);
         tx.hash = evmTxHash(tx);
         tx.status = 1;
@@ -557,7 +734,9 @@ class Server {
         const nonce = user ? (user.nonce || 0) : 0;
         const gasPrice = req.body.gas_price || this.chain._baseFeeForHeight(this.chain.height + 1);
         const gasLimit = req.body.gas_limit || 3000000;
-        const tx = { from_addr, to_addr: address, value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce, fee: req.body.fee || String(gasLimit), gas_limit: gasLimit, gas_price: String(gasPrice), chain_id: this.cfg.chainId || '0', priority_fee: req.body.priority_fee || '0', data: calldata };
+        const txNoSig = { from_addr, to_addr: address, value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce, gas_limit: gasLimit, data: calldata };
+        const defaultFee = minimumFee(txNoSig, this.chain._baseFeeForHeight(this.chain.height + 1));
+        const tx = { from_addr, to_addr: address, value: String(Math.round(Number(value) || 0) * 1e18 || 0), nonce, fee: req.body.fee || String(defaultFee), gas_limit: gasLimit, gas_price: String(gasPrice), chain_id: this.cfg.chainId || '0', priority_fee: req.body.priority_fee || '0', data: calldata };
         tx.signature = signTransactionTx(tx, pkHex);
         tx.hash = evmTxHash(tx);
         tx.status = 1;
@@ -673,9 +852,17 @@ const validation = await this.chain.validateTxForMempool(tx);
     app.post('/api/node/settings', requireAdmin, (req, res) => {
       const updates = req.body;
       if (!updates || typeof updates !== 'object') return res.status(400).json({ error: 'settings object required' });
-      Object.assign(this.cfg, updates);
-      require('../../config/config').saveConfig(this.cfg);
-      res.json({ ok: true, config: this.cfg });
+      const unsafe = ['adminToken', 'minerPrivateKey', 'minerPublicKey', 'dbPath', 'dataDir', 'plotsDir', 'port', 'p2pWsPort', 'discoveryPort', 'discoveryUrl', 'seedPeers', 'nodeUrl'];
+      const sanitized = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(updates)) {
+        if (unsafe.includes(k)) continue; // ignore attempts to change protected keys
+        this.cfg[k] = v;
+        sanitized[k] = v;
+        changed = true;
+      }
+      if (changed) require('../../config/config').saveConfig(this.cfg);
+      res.json({ ok: true, config: sanitized });
     });
 
     app.get('/api/logs', requireAdmin, (req, res) => res.json({ logs: getLogBuffer() }));
@@ -857,10 +1044,11 @@ const validation = await this.chain.validateTxForMempool(tx);
     });
     this._startTime = Date.now();
     this._fetchPeerStorage();
-    setInterval(() => this._fetchPeerStorage(), 30000);
+    this._peerStorageTimer = setInterval(() => this._fetchPeerStorage(), 30000);
   }
 
   stop() {
+    if (this._peerStorageTimer) { clearInterval(this._peerStorageTimer); this._peerStorageTimer = null; }
     if (this.server) try { this.server.close(); } catch {}
   }
 }

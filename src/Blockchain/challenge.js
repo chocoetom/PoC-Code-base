@@ -21,8 +21,8 @@ class ChallengeManager {
     const tipHash = tip ? tip.hash : ZERO_HASH;
     const challengeId = sha256hex(`${genSig}:${tipHash}`);
     const targetIdx = parseInt(sha256hex(genSig).slice(0, 8), 16) % MINING_SCOOP_MODULUS;
-    const challengeGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 240) / 2));
-    const challengeExpiredGraceSec = Math.max(this.cfg.challengeExpiredGraceSec || 300, (this.cfg.expectedTimePerBlock || 240) * 2);
+    const challengeGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 60) / 2));
+    const challengeExpiredGraceSec = Math.max(this.cfg.challengeExpiredGraceSec || 300, (this.cfg.expectedTimePerBlock || 60) * 2);
     const baseTarget = this.chain._baseTargetForHeight(this.chain.height);
     const withBt = (r) => (r ? { ...r, base_target: (r && r.base_target) || String(baseTarget) } : r);
 
@@ -39,7 +39,7 @@ class ChallengeManager {
       return withBt(expired);
     }
 
-    const minTtl = Math.max(this.cfg.challengeTtlSec || 300, this.cfg.challengeMinTtlSec || (this.cfg.expectedTimePerBlock || 240) * 5);
+    const minTtl = Math.max(this.cfg.challengeTtlSec || 300, this.cfg.challengeMinTtlSec || (this.cfg.expectedTimePerBlock || 60) * 5);
     const ttl = Math.min(Math.max(minTtl, 60), 86400);
     this.db.prepare('DELETE FROM mining_challenges WHERE forged_block_height IS NULL AND (challenge_id != ? OR expires_at + ? < ?) AND challenge_id NOT IN (SELECT DISTINCT challenge_id FROM challenge_submissions)').run(challengeId, challengeGrace, now);
     this.db.prepare('DELETE FROM mining_challenges WHERE challenge_id = ? AND (forged_block_height IS NOT NULL OR expires_at < ?)').run(challengeId, now - challengeGrace);
@@ -59,7 +59,7 @@ class ChallengeManager {
 
   submitProof(chain, challengeId, miner, plotId, deadline, proofPacket = null) {
     const now = Math.floor(Date.now() / 1000);
-    const submitGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 240) / 2));
+    const submitGrace = Math.max(15, Math.floor((this.cfg.expectedTimePerBlock || 60) / 2));
     const ch = this.db.prepare('SELECT * FROM mining_challenges WHERE challenge_id = ? AND forged_block_height IS NULL AND expires_at + ? >= ?').get(challengeId, submitGrace, now);
     if (!ch) return { ok: false, motivo: 'challenge not found or expired' };
     if (ch.forged_block_height != null) return { ok: false, motivo: 'challenge already finalized' };
@@ -155,7 +155,7 @@ class ChallengeManager {
     return good;
   }
 
-  _forgeBlock(chain, challenge, miner, deadline, rewardDistribution = [], plotId = '', proofDigest = '', winnerProof = null) {
+  async _forgeBlock(chain, challenge, miner, deadline, rewardDistribution = [], plotId = '', proofDigest = '', winnerProof = null) {
     try {
       miner = typeof miner === 'string' ? miner.toLowerCase() : miner;
       const newHeight = chain.height + 1;
@@ -163,6 +163,9 @@ class ChallengeManager {
       const parent = chain.getBlock(chain.height);
       if (parent && now <= parent.timestamp) now = parent.timestamp + 1;
       log('info', `[TX] _forgeBlock called for height ${newHeight}, chain.height=${chain.height}`);
+      const pohSample = await chain.getPohSample();
+      const parentPoHCount = parent ? safeInt(parent.poh_count, 0) : 0;
+      const pohDelta = Math.max(0, safeInt(pohSample.poh_sequence_count, 0) - parentPoHCount);
       const mempoolTxs = this._selectValidMempoolTxs(chain, 100);
       log('info', `[TX] _forgeBlock: ${mempoolTxs.length} txs selected for block #${newHeight}`);
       const txHashes = mempoolTxs.map(t => t.hash || hashTransaction(t));
@@ -184,6 +187,9 @@ class ChallengeManager {
         forger: String(this.cfg.minerAddress || '').toLowerCase(),
         _from_local_forge: true, rewards: rewardDistribution,
         winner_proof: winnerProof || null,
+        poh_hash: pohSample.poh_hash,
+        poh_sequence_count: pohDelta,
+        poh_count: safeInt(pohSample.poh_sequence_count, 0),
       };
       if (this.cfg.minerPrivateKey) {
         const { signMessage, blockMessage } = require('../crypto-utils/crypto');
@@ -342,7 +348,7 @@ class ChallengeManager {
         plot_id: winner.plot_id || '',
         proof_signature: winner.proof_signature || '',
       };
-      const block = this._forgeBlock(chain, challenge, winner.miner, winner.deadline, distribution, winner.plot_id || '', winner.proof_digest || '', winnerProof);
+      const block = await this._forgeBlock(chain, challenge, winner.miner, winner.deadline, distribution, winner.plot_id || '', winner.proof_digest || '', winnerProof);
       if (!block) { log('error', `[FORGE] _forgeBlock returned no block for challenge ${challenge.challenge_id.slice(0, 12)} (winner ${(winner.miner || '').slice(0, 10)}… d=${winner.deadline}s)`); return null; }
       const result = await chain.addBlock(block, { skipStateValidation: true, skipPocValidation: true });
       if (!result.ok) {
@@ -358,4 +364,4 @@ class ChallengeManager {
   }
 }
 
-module.exports = { ChallengeManager, TIERS, getTier, computeBaseTargetWithTier };
+module.exports = { ChallengeManager, TIERS, TIER_REWARD_PCT, getTier, computeBaseTargetWithTier };

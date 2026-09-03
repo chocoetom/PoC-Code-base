@@ -1,7 +1,3 @@
-// Ethereum-compatible JSON-RPC endpoint for ChocoNode.
-// Exposes the standard Ethereum JSON-RPC 2.0 methods expected by popular
-// wallets (MetaMask, Trust, Coinbase, Rabby, Frame, WalletConnect, etc.) on
-// the SAME HTTP port as the node's existing HTTP API.
 const express = require('express');
 const WebSocket = require('ws');
 const { keccak256 } = require('ethers');
@@ -11,6 +7,7 @@ const { hexToBytes, bytesToHex } = require('@ethereumjs/util');
 const { evmTxDigest, evmTxHash, signatureFromHex, recoverTransactionSender, isValidAddress, toChecksumAddress, sha256hex } = require('../crypto-utils/crypto');
 const { logsToBloom, receiptsRoot } = require('./evm-bloom');
 const { log } = require('../../config/config');
+const { GAS_PARAMS, estimateIntrinsicGas, minimumFee } = require('../consensus/gas');
 
 const ZERO_ADDRESS = '0x' + '0'.repeat(40);
 const ZERO_HASH = '0'.repeat(64);
@@ -428,7 +425,7 @@ class EthereumRPC {
     const dataHex = hexData(parsed.data);
     const gasLimit = Number(parsed.gasLimit || 0n);
     const effectiveGasPrice = parsed.maxFeePerGas != null && parsed.maxFeePerGas > 0n ? parsed.maxFeePerGas : (parsed.gasPrice || 0n);
-    const fee = gasLimit * Number(effectiveGasPrice);
+    const fee = (BigInt(gasLimit) * effectiveGasPrice).toString();
     const tx = {
       from_addr: sender,
       to_addr: to,
@@ -627,18 +624,33 @@ class EthereumRPC {
         if (from && minerAddr && from !== minerAddr) throw rpcError(-32000, 'can only send from node miner account');
         const to = txObj.to ? normalizeAddr(txObj.to) : '';
         const nonce = txObj.nonce != null ? Number(parseQuantity(txObj.nonce, 'nonce')) : this._pendingNonceOf(from || minerAddr);
-        if (!from && minerAddr) return await this._sendTransactionWithKey({ ...txObj, from: minerAddr, to, nonce }, pk);
-        const gasLimit = txObj.gas ? Number(parseQuantity(txObj.gas, 'gas')) : (txObj.data ? 3000000 : 21000);
+        const baseFee = this.chain._baseFeeForHeight(this.chain.height + 1);
+        const dataHex = normalizeHex(txObj.data || '0x');
+        // Size-aware gas limit: must cover intrinsic gas (grows with payload), capped by the per-tx max.
+        const rawGas = txObj.gas ? Number(parseQuantity(txObj.gas, 'gas')) : (dataHex && dataHex !== '0x' && dataHex.length > 2 ? 3000000 : 21000);
+        const intrinsic = estimateIntrinsicGas({ data: dataHex });
+        const gasLimit = Math.min(GAS_PARAMS.maxGasPerTx, Math.max(rawGas, intrinsic));
+        // Fee anti-inflation guard (fee creep): the +10% competitive tip is applied
+        // ONLY when the mempool is congested (>=50% full), when queueing outranks the
+        // base fee. On an idle network the RPC suggests the base fee + default tip, so
+        // repeated RPC suggestions cannot inflate the going rate block-over-block.
+        const min = minimumFee({ data: dataHex }, baseFee);
+        const cap = this.cfg.maxMempoolSize && this.cfg.maxMempoolSize > 0 ? this.cfg.maxMempoolSize : 5000;
+        let pending = 0;
+        try { pending = this.db.prepare('SELECT COUNT(*) AS c FROM mempool').get().c; } catch {}
+        const congested = pending >= cap / 2;
+        const fee = congested ? min + (min / 10n) : min;
         const internalTx = {
           from_addr: minerAddr,
           to_addr: to,
           value: String(parseQuantity(txObj.value || 0, 'value')),
           nonce,
           gas_limit: gasLimit,
-          gas_price: String(this.chain._baseFeeForHeight(this.chain.height + 1)),
+          gas_price: String(baseFee),
+          fee: fee.toString(),
           chain_id: String(this._networkChainId || 0),
           priority_fee: '0',
-          data: normalizeHex(txObj.data || '0x'),
+          data: dataHex,
         };
         const { signTransactionTx } = require('../crypto-utils/crypto');
         internalTx.signature = signTransactionTx(internalTx, pk);
@@ -739,11 +751,14 @@ class EthereumRPC {
       case 'eth_getProof':
         throw rpcError(-32601, 'eth_getProof not supported');
       case 'eth_feeHistory': {
-        const count = Number(parseQuantity(p0, 'block count'));
+        let count = Number(parseQuantity(p0, 'block count'));
+        if (!Number.isFinite(count) || count < 1) count = 1;
+        count = Math.min(count, 1024); // bound allocation (client-supplied)
         const newest = resolveBlockTag(this.chain, p1);
+        if (typeof newest !== 'number') throw rpcError(-32602, 'invalid block tag');
         const base = this.chain._baseFeeForHeight(this.chain.height + 1);
         return {
-          oldestBlock: toQuantityNumber(Math.max(0, newest - Math.max(0, count - 1))),
+          oldestBlock: toQuantityNumber(Math.max(0, newest - count + 1)),
           baseFeePerGas: Array.from({ length: count }, () => toQuantity(base)),
           gasUsedRatio: Array.from({ length: count }, () => 0),
           reward: Array.from({ length: count }, () => ['0x0']),

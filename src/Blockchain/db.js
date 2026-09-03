@@ -24,7 +24,9 @@ function initDB(dbPath, cfg) {
       chain_work TEXT, signature TEXT, generation_signature TEXT,
       proof_digest TEXT, plot_id TEXT, state_root TEXT, origin TEXT,
       total_fees_units TEXT, gas_used INTEGER, gas_limit INTEGER, base_fee TEXT DEFAULT '0',
-      base_target TEXT, miner_public_key TEXT DEFAULT ''
+      base_target TEXT, miner_public_key TEXT DEFAULT '',
+      poh_hash TEXT DEFAULT '', poh_sequence_count INTEGER DEFAULT 0, poh_count INTEGER DEFAULT 0,
+      body_pruned INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_blocks_height ON blocks(height);
     CREATE INDEX IF NOT EXISTS idx_blocks_parent ON blocks(parent_hash);
@@ -122,7 +124,6 @@ function initDB(dbPath, cfg) {
       updated_at INTEGER
     );
   `);
-
   try { db.prepare('ALTER TABLE peers ADD COLUMN timeout_until INTEGER DEFAULT 0').run(); } catch {}
 
   try {
@@ -189,14 +190,21 @@ function initDB(dbPath, cfg) {
   try { db.prepare('ALTER TABLE mining_challenges ADD COLUMN base_target TEXT').run(); } catch {}
   try { db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch {}
   try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN total_scoops INTEGER DEFAULT 0').run(); } catch {}
+  try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN vrf_public_key TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN vrf_output TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN vrf_proof TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE plot_commitments ADD COLUMN vrf_verified INTEGER DEFAULT 0').run(); } catch {}
+  try { db.prepare('ALTER TABLE peer_plot_commitments ADD COLUMN merkle_root TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE peer_plot_commitments ADD COLUMN vrf_public_key TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE peer_plot_commitments ADD COLUMN vrf_output TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE peer_plot_commitments ADD COLUMN vrf_proof TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE peer_plot_commitments ADD COLUMN signature TEXT DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE peer_plot_commitments ADD COLUMN public_key TEXT DEFAULT ""').run(); } catch {};
   try { db.prepare("ALTER TABLE transactions ADD COLUMN chain_id TEXT DEFAULT ''").run(); } catch {}
 
   const chainIdDefault = String(cfg.chainId || '0');
   try {
-    const updatedRows = db.prepare("UPDATE transactions SET chain_id = ? WHERE chain_id IS NULL OR chain_id = ''").run(chainIdDefault);
-    if (updatedRows.changes > 0) {
-      try { db.prepare("UPDATE transactions SET chain_id = ?").run(chainIdDefault); } catch (e) {}
-    }
+    db.prepare("UPDATE transactions SET chain_id = ? WHERE chain_id IS NULL OR chain_id = ''").run(chainIdDefault);
   } catch (e) {}
 
   try {
@@ -239,6 +247,36 @@ function initDB(dbPath, cfg) {
     db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_height ON contract_logs(block_height)').run();
     db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_address ON contract_logs(address)').run();
     db.prepare('CREATE INDEX IF NOT EXISTS idx_contract_logs_tx_hash ON contract_logs(tx_hash)').run();
+  } catch (e) { /* table likely exists */ }
+
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS zkp_proofs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_height INTEGER, end_height INTEGER, block_count INTEGER,
+        commitment TEXT NOT NULL, interval_start_height INTEGER, interval_end_height INTEGER,
+        proof TEXT NOT NULL, verified INTEGER DEFAULT 0, created_at INTEGER
+      )
+    `);
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_zkp_proofs_end ON zkp_proofs(end_height)').run();
+  } catch (e) { /* table likely exists */ }
+  try { db.prepare('ALTER TABLE zkp_proofs ADD COLUMN interval_start_height INTEGER').run(); } catch {}
+  try { db.prepare('ALTER TABLE zkp_proofs ADD COLUMN interval_end_height INTEGER').run(); } catch {}
+
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS snapshots (
+        height INTEGER PRIMARY KEY,
+        state_root TEXT NOT NULL,
+        zkp_commitment TEXT DEFAULT '',
+        digest TEXT DEFAULT '',
+        block_hash TEXT DEFAULT '',
+        file TEXT DEFAULT '',
+        verified INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT 0
+      )
+    `);
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_snapshots_state_root ON snapshots(state_root)').run();
   } catch (e) { /* table likely exists */ }
 
   return db;

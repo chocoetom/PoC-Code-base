@@ -12,6 +12,8 @@ const { PeerManager } = require('../P2P/peers');
 const { SyncEngine } = require('../P2P/sync');
 const { Server } = require('../api/server');
 const { P2PWebSocketServer } = require('../P2P/p2p-ws');
+const { PohEngine } = require('../crypto-utils/poh-engine');
+const { ZERO_HASH } = require('../crypto-utils/poh');
 const { setupOptionalModules, loadOptionalModules } = require('./optional');
 
 class NodeRegistry {
@@ -90,6 +92,22 @@ class ChocoNode {
     this.chain = new Chain(this.db, cfg);
     this.chain.optionalModules = this.optionalModules;
     if (this.smartContracts) this.chain.setContractExecutor(this.smartContracts);
+    // Wire the Proof-of-History engine. Seed it from the current canonical tip so
+    // the continuous clock resumes where the chain left off (absolute counts keep
+    // increasing across restarts).
+    try {
+      const tip = this.chain.getBlock(this.chain.height);
+      const tipPoH = tip ? tip.poh_hash || ZERO_HASH : ZERO_HASH;
+      const tipCount = tip ? (parseInt(tip.poh_count, 10) || 0) : 0;
+      this.pohEngine = new PohEngine({});
+      this.pohEngine.setOffset(tipCount);
+      this.chain.setPohEngine(this.pohEngine);
+      this.pohEngine.start(tipPoH).then(() => {
+        log('info', `[PoH] Engine started from ${tipPoH.slice(0, 12)}… (offset ${tipCount})`);
+      }).catch((e) => log('warn', `[PoH] Engine start failed: ${e.message}`));
+    } catch (e) {
+      log('warn', `[PoH] Engine init skipped: ${e.message}`);
+    }
     this.peers = new PeerManager(this.db, cfg);
     for (const seed of (cfg.seedPeers || [])) this.peers.add(seed);
     this.challengeMgr = new ChallengeManager(this.db, this.chain, cfg, this.optionalModules);
@@ -111,10 +129,11 @@ class ChocoNode {
 
     setInterval(() => { try { this.peers.decayHealth(); } catch {} }, 300000);
     setInterval(() => { try { this.chain.cleanMempool(); } catch {} }, 60000);
-    setInterval(() => { try { this.chain.prune(); } catch {} }, 600000);
+    setInterval(() => { try { this.chain.retireOldBlocks(); } catch {} }, 600000);
     setInterval(() => { try { if (!this.db || this.db.open === false) return; this.challengeMgr.finalizeExpiredChallenges(this.chain, this.sync).catch(e => log('error', `Finalize error: ${e.message}`)); } catch {} }, 5000);
     setInterval(() => { this.sync.loopSync().catch(() => {}); }, cfg.syncIntervalMs || 10000);
     setInterval(() => { this.sync.heartbeat().catch(() => {}); }, cfg.heartbeatMs || 20000);
+    setInterval(() => { this.sync.plotsGossip().catch(() => {}); }, Math.max(30000, (cfg.heartbeatMs || 20000) * 3));
     setInterval(() => { this.sync.discoverPeers().catch(() => {}); }, cfg.discoveryMs || 30000);
 
     setTimeout(async () => {
@@ -134,15 +153,12 @@ class ChocoNode {
     const cfg = this.cfg;
     console.log('');
     console.log('\x1b[32m\x1b[1m' +
-      '     _               _       _     \n' +
-      ' ___| |_ ___ ___ ___| |_ _ _| |_   \n' +
-      '|  _|   | . |  _| . |   | | | . |  \n' +
-      '|___|_|_|___|___|___|_|_|___|___|  \n' +
-      '                                    \n' +
-      ' _____ _     _              _      \n' +
-      '|     |_|___|_|   ___ ___ _| |___  \n' +
-      '| | | | |   | |  |   | . | . | -_| \n' +
-      '|_|_|_|_|_|_|_|  |_|_|___|___|___|\x1b[0m');
+      ' ██████╗ ██████╗██████╗  ██████╗  ██████╗    ███╗   ██╗ ██████╗ ██████╗ ███████╗\n' +
+      '██║     ██║     ██████╔╝██║   ██║██║         ██╔██╗ ██║██║   ██║██║  ██║██╔════╝\n' +
+      '██║     ██║     ██╔═══╝ ██║   ██║██║         ██║╚██╗██║██║   ██║██║  ██║█████╗  \n' +
+      '██║     ██║     ██║     ██║   ██║██║         ██║ ╚████║██║   ██║██║  ██║██╔══╝  \n' +
+      '╚██████╗╚██████╗██║     ╚██████╔╝╚██████╗    ██║  ╚███║╚██████╔╝██████╔╝███████╗\n' +
+      ' ╚═════╝ ╚═════╝╚═╝      ╚═════╝  ╚═════╝    ╚═╝   ╚══╝ ╚═════╝ ╚═════╝ ╚══════╝');
     console.log('');
     console.log(`  \x1b[2mPort: ${cfg.port}  |  Peers: ${cfg.seedPeers.length} seeds\x1b[0m`);
     if (cfg.discoveryPort > 0) console.log(`  \x1b[2mDiscovery: WS on port ${cfg.discoveryPort}\x1b[0m`);

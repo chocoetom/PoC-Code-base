@@ -12,24 +12,17 @@ if (args.includes('--help') || args.includes('-h')) {
   const RESET = '\x1b[0m';
 
   console.log(`
-${CYAN}      _                     _           _      
-  ___| |__   ___   ___ ___ | |__  _   _| |__   
- / __| '_ \\ / _ \\ / __/ _ \\| '_ \\| | | | '_ \\  
-| (__| | | | (_) | (_| (_) | | | | |_| | |_) | 
- \\___|_| |_|\\___/ \\___\\___/|_| |_|\\__,_|_.__/  
-                                               
- _          _                  _               
-| |__   ___| |_ __    ___  ___| |_ _   _ _ __  
-| '_ \\ / _ \\ | '_ \\  / __|/ _ \\ __| | | | '_ \\ 
-| | | |  __/ | |_) | \\__ \\  __/ |_| |_| | |_) |
-|_| |_|\\___|_| .__/  |___/\\___|\\__|\\__,_| .__/ 
-             |_|                        |_|    ${RESET}
+${CYAN} ██████╗ ██████╗██████╗  ██████╗  ██████╗    ███╗   ██╗ ██████╗ ██████╗ ███████╗
+██║     ██║     ██████╔╝██║   ██║██║         ██╔██╗ ██║██║   ██║██║  ██║██╔════╝
+██║     ██║     ██╔═══╝ ██║   ██║██║         ██║╚██╗██║██║   ██║██║  ██║█████╗  
+╚██████╗╚██████╗██║     ╚██████╔╝╚██████╗    ██║ ╚████║╚██████╔╝██████╔╝███████╗
+ ╚═════╝ ╚═════╝╚═╝      ╚═════╝  ╚═════╝    ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝${RESET}
 
-  ${BOLD}ChocoNode — PoC Testnet Node${RESET}
+  ${BOLD}ChocoCoin Proof-of-Capacity Node${RESET}
 
   ${GREEN}USAGE${RESET}
-    node src/index.js              Start the node
-    node src/index.js --help       Show this help
+    node src/bootstrap/index.js              Start the node
+    node src/bootstrap/index.js --help       Show this help
 
   ${GREEN}ENVIRONMENT VARIABLES${RESET}
     ${DIM}PORT${RESET}              3001                      HTTP port
@@ -44,8 +37,8 @@ ${CYAN}      _                     _           _
     config/node_config.json         Auto-generated, overrides defaults
 
   ${GREEN}EXAMPLES${RESET}
-    node src/index.js
-    PORT=3002 node src/index.js
+    node src/bootstrap/index.js
+    PORT=3002 node src/bootstrap/index.js
 
 ${DIM}                    _                  _(_)_                          wWWWw   _
       @@@@       (_)@(_)   vVVVv     _     @@@@  (___) _(_)_

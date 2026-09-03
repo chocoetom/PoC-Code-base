@@ -1,7 +1,9 @@
 const { ZERO_HASH, sha256hex, safeInt, safeBigInt, hashBlock, hashTransaction, merkleRoot, computeStateRoot, computeStateRootAfterTxs, computeContractStateRoot, verifySignature, calculateMiningReward, isBetterChainCandidate, canonicalTxMessage, blockMessage, signMessage, proofMessage, plotScoopCount, MINING_SCOOP_MODULUS, pubkeyToAddress, recoverTransactionSender } = require('../crypto-utils/crypto');
 const { IncrementalStateRoot } = require('./state-trie');
+const { ZkpService } = require('../crypto-utils/zkp-service');
+const { SnapSyncService } = require('../snap/snap-service');
 const { hashBlockAsync, verifySignatureAsync, canonicalTxMessageAsync } = require('../utils/worker-pool');
-const { estimateIntrinsicGas, nextBaseFee, GAS_PARAMS } = require('../consensus/gas');
+const { estimateIntrinsicGas, nextBaseFee, GAS_PARAMS, capTxGasLimit, minimumFee } = require('../consensus/gas');
 const { log } = require('../../config/config');
 const { runHook } = require('../bootstrap/optional');
 const { createBlock } = require('@ethereumjs/block');
@@ -9,6 +11,7 @@ const { bytesToHex } = require('@ethereumjs/util');
 const BN = require('bn.js');
 
 const FINALIZATION_DEPTH = 30;
+const ANCHOR_WINDOW_SIZE = 8192;
 function normalizeAddr(a) { return typeof a === 'string' ? a.toLowerCase() : a; }
 
 class Chain {
@@ -27,6 +30,10 @@ class Chain {
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN contract_state_root TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE blocks ADD COLUMN forger TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare("ALTER TABLE blocks ADD COLUMN rewards_json TEXT DEFAULT '[]'").run(); } catch (e) { /* already exists */ }
+    try { this.db.prepare('ALTER TABLE blocks ADD COLUMN poh_hash TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
+    try { this.db.prepare('ALTER TABLE blocks ADD COLUMN poh_sequence_count INTEGER DEFAULT 0').run(); } catch (e) { /* already exists */ }
+    try { this.db.prepare('ALTER TABLE blocks ADD COLUMN poh_count INTEGER DEFAULT 0').run(); } catch (e) { /* already exists */ }
+    try { this.db.prepare('ALTER TABLE blocks ADD COLUMN body_pruned INTEGER DEFAULT 0').run(); } catch (e) { /* already exists */ }
     try { this.db.prepare('ALTER TABLE transactions ADD COLUMN data TEXT DEFAULT ""').run(); } catch (e) { /* already exists */ }
     this.stateTrie = new IncrementalStateRoot();
     this._loadTip();
@@ -38,9 +45,39 @@ class Chain {
     try { repFix('block_rewards'); repFix('transactions'); } catch (e) { /* table missing */ }
     try { this.db.prepare('DELETE FROM challenge_submissions WHERE id NOT IN (SELECT MIN(id) FROM challenge_submissions GROUP BY challenge_id, miner, plot_id, deadline)').run(); } catch (e) { /* nothing to clean */ }
     try { this.db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS ux_sub_challenge_plot ON challenge_submissions(challenge_id, miner, plot_id, deadline)').run(); } catch (e) { /* duplicates present, skipped */ }
+    try { this.zkp = new ZkpService(this.db, this.cfg); } catch (e) { log('warn', `ZKP service init: ${e.message}`); this.zkp = null; }
+    try {
+      this.snapsync = new SnapSyncService(this.db, this.cfg);
+      if (this.zkp) this.snapsync.setZkp(this.zkp);
+    } catch (e) { log('warn', `SnapSync service init: ${e.message}`); this.snapsync = null; }
   }
 
   setContractExecutor(sc) { this.contracts = sc; }
+
+  setPohEngine(engine) {
+    this.pohEngine = engine;
+    this.poh = require('../crypto-utils/poh');
+  }
+
+
+  async getPohSample() {
+    if (!this.pohEngine) return { poh_hash: this.poh ? this.poh.ZERO_HASH : ZERO_HASH, poh_sequence_count: 0, poh_count: 0 };
+    const s = await this.pohEngine.sample();
+    return { poh_hash: s.poh_hash, poh_sequence_count: s.poh_sequence_count, poh_count: s.poh_sequence_count };
+  }
+
+  _verifyPohSegment(parent, bloco) {
+    const poh = this.poh || require('../crypto-utils/poh');
+    const segCount = safeInt(bloco.poh_sequence_count, -1);
+    if (segCount < 0) return { ok: false, motivo: 'invalid poh_sequence_count' };
+    const parentPoH = parent.poh_hash || ZERO_HASH;
+    const blockPoH = bloco.poh_hash || '';
+    if (!blockPoH) return { ok: false, motivo: 'block missing poh_hash' };
+    if (!poh.pohVerify(parentPoH, blockPoH, segCount)) {
+      return { ok: false, motivo: `invalid PoH segment h=${bloco.height}: expected SHA^${segCount}(${parentPoH.slice(0, 10)}…)= ${blockPoH.slice(0, 10)}…` };
+    }
+    return { ok: true };
+  }
 
   _initGenesis() {
     const cfg = this.cfg;
@@ -57,6 +94,7 @@ class Chain {
       proof_digest: '', plot_id: '', state_root,
       origin: 'genesis', total_fees_units: '0', gas_used: 0, gas_limit: GAS_PARAMS.blockGasLimit, base_target: String(this.cfg.genesisBaseTarget ?? this._defaultBaseTarget()),
       transactions: [], rewards: [],
+      poh_hash: ZERO_HASH, poh_sequence_count: 0, poh_count: 0,
     };
     genesis.hash = hashBlock(genesis);
     try {
@@ -65,11 +103,12 @@ class Chain {
       const gasUsed = 0;
       this.db.prepare(`INSERT INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
         reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-        total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, rewards_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, rewards_json, poh_hash, poh_sequence_count, poh_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         0, genesis.hash, ZERO_HASH, now, 'genesis', '', ZERO_HASH, '0', '0', String(target),
         '0', String(reward), 0, String(work), '', ZERO_HASH, '', '', state_root, 'genesis',
         String(totalFees), gasUsed, GAS_PARAMS.blockGasLimit, genesis.base_target, String(GAS_PARAMS.initialBaseFee),
-        genesis.contract_state_root || '', genesis.forger || '', '[]'
+        genesis.contract_state_root || '', genesis.forger || '', '[]',
+        genesis.poh_hash, genesis.poh_sequence_count, genesis.poh_count
       );
       this.height = 0;
       this.bestHash = genesis.hash;
@@ -194,7 +233,7 @@ class Chain {
       try { return BigInt(this.cfg.initialTarget); } catch { return BigInt('0x00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF'); }
     }
     const interval = this.cfg.difficultyAdjustBlocks || 8192;
-    const expected = this.cfg.expectedTimePerBlock || 240;
+    const expected = this.cfg.expectedTimePerBlock || 60;
     if (height % interval !== 0) {
       const prev = this.db.prepare('SELECT target FROM blocks WHERE height = ?').get(height - 1);
       if (prev) try { return BigInt(prev.target); } catch {}
@@ -222,7 +261,7 @@ class Chain {
   }
 
   _defaultBaseTarget() {
-    const blockTime = Math.max(1, this.cfg.expectedTimePerBlock || 240);
+    const blockTime = Math.max(1, this.cfg.expectedTimePerBlock || 60);
     let candidates = 0n;
     try {
       const rows = this.db.prepare('SELECT DISTINCT plot_id, size_gb FROM plot_commitments').all();
@@ -244,7 +283,7 @@ class Chain {
 
   _baseTargetForHeight(height) {
     if (height === 0) return String(this.cfg.genesisBaseTarget ?? this._defaultBaseTarget());
-    const expectedTime = this.cfg.expectedTimePerBlock || 240;
+    const expectedTime = this.cfg.expectedTimePerBlock || 60;
     const windowSize = Math.min(256, this.cfg.difficultyAdjustBlocks || 64);
     const prev = this.db.prepare('SELECT base_target, timestamp FROM blocks WHERE height = ?').get(height - 1);
     if (!prev) return this._defaultBaseTarget();
@@ -287,7 +326,7 @@ class Chain {
   }
 
   async addBlock(bloco, opts = {}) {
-    const { skipTxValidation = false, skipPocValidation = false, skipStateValidation = false, skipSignature = false, skipHashValidation = false, skipTargetValidation = false, forceSync = false, skipContractStateValidation = false } = opts;
+    const { skipTxValidation = false, skipStateValidation = false, skipSignature = false, skipHashValidation = false, skipTargetValidation = false, forceSync = false, skipContractStateValidation = false, skipPohValidation = false, skipGasLimit = false } = opts;
     const isLocalForge = !!bloco._from_local_forge;
     const blockOrigin = isLocalForge ? 'local' : 'network';
     delete bloco._from_local_forge;
@@ -302,7 +341,7 @@ class Chain {
     if (bloco.miner) bloco.miner = normalizeAddr(bloco.miner);
     if (Array.isArray(bloco.rewards)) bloco.rewards.forEach(r => { if (r.miner) r.miner = normalizeAddr(r.miner); });
     if (height > 0) {
-      const parent = this.db.prepare('SELECT height, timestamp, hash, chain_work FROM blocks WHERE hash = ?').get(bloco.parent_hash);
+      const parent = this.db.prepare('SELECT height, timestamp, hash, chain_work, poh_hash, poh_sequence_count, poh_count FROM blocks WHERE hash = ?').get(bloco.parent_hash);
       if (!parent) return { ok: false, motivo: 'parent not found' };
       if (parent.height !== height - 1) return { ok: false, motivo: 'height sequence error' };
       if (safeInt(bloco.timestamp, -1) <= safeInt(parent.timestamp, -1)) return { ok: false, motivo: 'timestamp <= parent' };
@@ -332,6 +371,22 @@ class Chain {
         if (ratio > maxRatio) {
           log('warn', `base_target drift at #${height}: got ${blockBaseTarget}, expected ${expectedBaseTarget} (${Number(ratio)}x > ${maxRatio}x)`);
           return { ok: false, motivo: `incorrect base_target: got ${blockBaseTarget}, expected ${expectedBaseTarget}` };
+        }
+      }
+
+      const pohCheck = this._verifyPohSegment(parent, bloco);
+      if (!pohCheck.ok) {
+        if (opts.skipPohValidation) log('warn', `[PoH] skipped segment validation at #${height}: ${pohCheck.motivo}`);
+        else return { ok: false, motivo: pohCheck.motivo };
+      }
+      if (!opts.skipPohValidation && bloco.poh_hash) {
+        const parentCount = safeInt(parent.poh_count, 0);
+        const blockCount = safeInt(bloco.poh_count, -1);
+        const delta = safeInt(bloco.poh_sequence_count, -1);
+        if (blockCount >= 0 && parent.poh_hash) {
+          if (blockCount !== parentCount + delta) {
+            return { ok: false, motivo: `PoH count discontinuity at #${height}: block ${blockCount} != parent ${parentCount} + delta ${delta}` };
+          }
         }
       }
     }
@@ -388,6 +443,9 @@ class Chain {
     const rewardStr = String(reward);
     const totalTxFees = txs.reduce((s, t) => s + safeBigInt(t.fee, 0n), 0n);
     const gasUsed = txs.reduce((s, t) => s + estimateIntrinsicGas(t), 0);
+    if (!opts.skipGasLimit && gasUsed > GAS_PARAMS.blockGasLimit) {
+      return { ok: false, motivo: `block gas ${gasUsed} exceeds max block gas limit ${GAS_PARAMS.blockGasLimit}` };
+    }
     const parentWork = height > 0 ? (() => { const p = this.db.prepare('SELECT chain_work FROM blocks WHERE hash = ?').get(bloco.parent_hash); return p ? safeBigInt(p.chain_work, 0n) : 0n; })() : 0n;
     const newWork = parentWork + this._blockWork(bloco);
     bloco.chain_work = String(newWork);
@@ -518,7 +576,7 @@ class Chain {
         this._updateStateTrie(txs, rewardsData, bloco.hash, height, (bloco.forger || bloco.miner || '').toLowerCase(), totalTxFees);
         this.db.prepare(`INSERT INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
           reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-          total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, miner_public_key, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          total_fees_units, gas_used, gas_limit, base_target, base_fee, contract_state_root, forger, miner_public_key, rewards_json, winner_proof, poh_hash, poh_sequence_count, poh_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           height, bloco.hash, bloco.parent_hash, bloco.timestamp, bloco.miner || '',
           bloco.challenge_id || '', bloco.tx_root || '', String(bloco.nonce || '0'),
           bloco.difficulty || '0', String(bloco.target || '0'), bloco.reward_units || '0',
@@ -531,7 +589,8 @@ class Chain {
           bloco.forger || '',
           bloco.miner_public_key || '',
           JSON.stringify(Array.isArray(bloco.rewards) ? bloco.rewards : []),
-          bloco.winner_proof && typeof bloco.winner_proof === 'object' ? JSON.stringify(bloco.winner_proof) : ''
+          bloco.winner_proof && typeof bloco.winner_proof === 'object' ? JSON.stringify(bloco.winner_proof) : '',
+          bloco.poh_hash || '', safeInt(bloco.poh_sequence_count, 0), safeInt(bloco.poh_count, -1) >= 0 ? safeInt(bloco.poh_count, 0) : 0
         );
         if (!skipStateValidation) {
           const actualStateRoot = computeStateRoot(this.db);
@@ -910,8 +969,11 @@ class Chain {
 
     const requiredGas = estimateIntrinsicGas(tx);
     if (safeInt(tx.gas_limit, 0) < requiredGas) return { ok: false, motivo: `gas_limit too low (need ${requiredGas})` };
+    if (safeInt(tx.gas_limit, 0) > GAS_PARAMS.maxGasPerTx) return { ok: false, motivo: `gas_limit exceeds max per tx (${GAS_PARAMS.maxGasPerTx})` };
     const currentBaseFee = BigInt(this._baseFeeForHeight(this.height + 1));
     if (safeBigInt(tx.gas_price, 0n) < currentBaseFee) return { ok: false, motivo: `gas_price below base fee (${currentBaseFee})` };
+    const minFee = minimumFee(tx, currentBaseFee);
+    if (safeBigInt(tx.fee, 0n) < minFee) return { ok: false, motivo: `fee too low (need ${minFee} = intrinsic ${estimateIntrinsicGas(tx)} * baseFee ${currentBaseFee})` };
 
     return { ok: true, motivo: 'valid' };
   }
@@ -948,7 +1010,7 @@ class Chain {
   computeMaxDeadline() {
     const row = this.db.prepare('SELECT COALESCE(SUM(size_gb), 0) as total FROM plot_commitments').get();
     const capacity = parseFloat(row ? row.total : 0) || 0;
-    const expected = this.cfg.expectedTimePerBlock || 240;
+    const expected = this.cfg.expectedTimePerBlock || 60;
     if (capacity <= 0) return 21600;
     return Math.max(600, Math.min(86400, Math.floor(expected * 36000 / Math.max(capacity, 1))));
   }
@@ -1116,7 +1178,7 @@ class Chain {
       this.db.transaction(() => {
 this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, timestamp, miner, challenge_id, tx_root, nonce, difficulty, target,
           reward_units, reward_cc, tx_count, chain_work, signature, generation_signature, proof_digest, plot_id, state_root, origin,
-          total_fees_units, gas_used, gas_limit, base_target, contract_state_root, forger, miner_public_key, rewards_json, winner_proof) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+          total_fees_units, gas_used, gas_limit, base_target, contract_state_root, forger, miner_public_key, rewards_json, winner_proof, poh_hash, poh_sequence_count, poh_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
           blk.height, blk.hash, blk.parent_hash || '', blk.timestamp || now, blk.miner || '',
           blk.challenge_id || '', blk.tx_root || '', String(blk.nonce || '0'), blk.difficulty || '0',
           String(blk.target || '0'), blk.reward_units || '0', blk.reward_cc || '0', blk.tx_count || 0,
@@ -1127,7 +1189,8 @@ this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, times
           blk.forger || '',
           blk.miner_public_key || '',
           JSON.stringify(Array.isArray(blk.rewards) ? blk.rewards : []),
-          blk.winner_proof && typeof blk.winner_proof === 'object' ? JSON.stringify(blk.winner_proof) : ''
+          blk.winner_proof && typeof blk.winner_proof === 'object' ? JSON.stringify(blk.winner_proof) : '',
+          blk.poh_hash || '', safeInt(blk.poh_sequence_count, 0), safeInt(blk.poh_count, -1) >= 0 ? safeInt(blk.poh_count, 0) : 0
         );
         for (const tx of txs) {
           const txHash = tx.hash || hashTransaction(tx);
@@ -1191,14 +1254,37 @@ this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, times
     return purged;
   }
 
+
+  retireOldBlocks() {
+    if (this.cfg.pruningEnabled === false) return 0;
+    const window = safeInt(this.cfg.anchorWindowSize, ANCHOR_WINDOW_SIZE);
+    const tip = this.db.prepare('SELECT MAX(height) AS m FROM blocks').get().m || 0;
+    const cutoff = tip - window;
+    if (cutoff < 0) return 0;
+    const pruned = this.db.prepare(
+      "UPDATE blocks SET body_pruned = 1 WHERE height <= ? AND body_pruned = 0",
+    ).run(cutoff).changes;
+    this.db.prepare('DELETE FROM transactions WHERE block_height <= ?').run(cutoff);
+    if (pruned > 0) {
+      log('info', `[ANCHOR] Retired ${pruned} blocks past the ${window}-block anchor window (tip=${tip}); bodies execution-pruned, headers preserved`);
+    }
+    let zkpProof = null;
+    let snapshot = null;
+    if (this.zkp) {
+      try { zkpProof = this.zkp.proveJustRetired(tip); } catch (e) { log('warn', `[ZKP] boundary proof generation failed: ${e.message}`); }
+    }
+    if (this.snapsync) {
+      try { snapshot = this.snapsync.generateAtBoundary(tip, { skipZkp: !this.zkp }); } catch (e) { log('warn', `[SnapSync] boundary snapshot generation failed: ${e.message}`); }
+    }
+    const out = { pruned };
+    if (zkpProof) out.zkp = { id: zkpProof.id, start: zkpProof.start_height, end: zkpProof.end_height, commitment: zkpProof.commitment };
+    if (snapshot) out.snapshot = { height: snapshot.height, state_root: snapshot.state_root, zkp_commitment: snapshot.zkp_commitment };
+    return Object.keys(out).length > 1 ? out : pruned;
+  }
+
   prune() {
-    if (!this.cfg.pruningEnabled) return;
-    const keep = this.cfg.pruneKeepBlocks || 1000;
-    const keepDays = this.cfg.pruneKeepDays || 30;
-    const cutoff = Math.floor(Date.now() / 1000) - keepDays * 86400;
-    this.db.prepare("DELETE FROM blocks WHERE height < (SELECT MAX(height) - ? FROM blocks) AND timestamp < ?").run(keep, cutoff);
-    this.db.prepare("DELETE FROM transactions WHERE block_height < (SELECT MAX(height) - ? FROM blocks)").run(keep);
-    this.db.prepare("DELETE FROM contract_logs WHERE block_height < (SELECT MAX(height) - ? FROM blocks)").run(keep);
+    if (this.cfg.pruningEnabled === false) return 0;
+    return this.retireOldBlocks();
   }
 
 }

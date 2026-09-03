@@ -3,7 +3,9 @@ const GAS_PARAMS = {
   gasPerByteZero: 4,
   gasPerByteNonZero: 16,
   initialBaseFee: 10 ** 9,
-  blockGasLimit: 10500000,
+  blockGasLimit: 120000000,         
+  targetBlockGasLimit: 60000000,       
+  maxGasPerTx: 10000000,            
   initialSmartContractGasLimit: 10000000,
   initialSmartContractGasPrice: 10 ** 9,
 };
@@ -20,6 +22,20 @@ function estimateIntrinsicGas(tx) {
   }
   return gas;
 }
+
+function capTxGasLimit(tx) {
+  const intrinsic = estimateIntrinsicGas(tx);
+  const requested = safeInt(tx.gas_limit, intrinsic);
+  const limit = Math.min(GAS_PARAMS.maxGasPerTx, Math.max(intrinsic, requested));
+  return { gasLimit: limit, capped: requested > GAS_PARAMS.maxGasPerTx };
+}
+
+function minimumFee(tx, baseFee) {
+  const intrinsic = estimateIntrinsicGas(tx);
+  return BigInt(intrinsic) * BigInt(baseFee || 1);
+}
+
+function safeInt(v, def) { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : def; }
 
 function nextBaseFee(parentBaseFee, parentGasUsed, targetGas, minGasPrice, mempoolPendingCount = 0) {
   if (parentGasUsed === targetGas) return parentBaseFee;
@@ -40,4 +56,6 @@ module.exports = {
   GAS_PARAMS,
   estimateIntrinsicGas,
   nextBaseFee,
+  capTxGasLimit,
+  minimumFee,
 };

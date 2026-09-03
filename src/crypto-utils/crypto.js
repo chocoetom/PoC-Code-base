@@ -9,7 +9,7 @@ const SECP_UNCOMPRESSED_LEN = 65;
 
 function isHexString(v) {
   if (typeof v !== 'string') return false;
-  return /^0x[0-9a-fA-F]+$/.test(v) || /^[0-9a-fA-F]+$/.test(v) || /^0x[0-9a-fA-F]*$/.test(v);
+  return /^0x[0-9a-fA-F]+$/.test(v) || /^[0-9a-fA-F]+$/.test(v);
 }
 
 function stripHex(v) {
@@ -212,11 +212,13 @@ function signatureFromHex(hex) {
 }
 
 function sha256hex(data) {
-  return crypto.createHash('sha256').update(typeof data === 'string' ? data : data).digest('hex');
+  const input = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
+  return crypto.createHash('sha256').update(input).digest('hex');
 }
 
 function sha256buf(data) {
-  return crypto.createHash('sha256').update(typeof data === 'string' ? data : data).digest();
+  const input = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
+  return crypto.createHash('sha256').update(input).digest();
 }
 
 function merkleRootBuf(hashes) {
@@ -474,6 +476,110 @@ function plotRegisterMessage(miner, plotId, merkleRoot, sizeGb, totalScoops) {
   }, ['merkle_root', 'miner', 'plot_id', 'size_gb', 'total_scoops', 'type'].sort());
 }
 
+const VRF_H2C_DOMAIN = Buffer.from('CC-VRF-h2c-v2');
+const VRF_SECRET_DOMAIN = Buffer.from('CC-VRF-secret-v1');
+const VRF_C_DOMAIN = Buffer.from('CC-VRF-c-v1');
+const POINT_AT_INFINITY = null;
+
+function vrfHashToCurve(merkleRootHex) {
+  const raw = stripHex(String(merkleRootHex));
+  const input = Buffer.from(raw, 'hex');
+  for (let i = 0; i < 4096; i++) {
+    const x = crypto.createHash('sha256').update(Buffer.concat([VRF_H2C_DOMAIN, input, Buffer.from(String(i))])).digest();
+    try {
+      const pt = secp256k1.ProjectivePoint.fromHex(Buffer.concat([Buffer.from([0x02]), x]));
+      if (pt.equals(secp256k1.ProjectivePoint.ZERO)) continue;
+      return pt;
+    } catch { /* x not a valid field element / curve point, increment */ }
+  }
+  throw new Error('vrfHashToCurve: failed to hash merkle_root to a curve point');
+}
+
+function vrfDerivePlotSecret(minerPrivateKeyHex, plotId, merkleRootHex) {
+  const pk = Buffer.from(stripHex(String(minerPrivateKeyHex)), 'hex');
+  if (pk.length !== 32) throw new Error('Invalid private key length');
+  const seed = Buffer.concat([
+    VRF_SECRET_DOMAIN,
+    pk,
+    Buffer.from(String(plotId || ''), 'utf8'),
+    Buffer.from(stripHex(String(merkleRootHex)), 'hex'),
+  ]);
+  const digest = crypto.createHash('sha256').update(seed).digest();
+  const idx = BigInt('0x' + digest.toString('hex'));
+  const n = secp256k1.CURVE.n;
+  let x = idx % n;
+  if (x === 0n) x = 1n;
+  return x;
+}
+
+function vrfProve(minerPrivateKeyHex, plotId, merkleRootHex) {
+  const x = vrfDerivePlotSecret(minerPrivateKeyHex, plotId, merkleRootHex);
+  const G = secp256k1.ProjectivePoint.BASE;
+  const H = vrfHashToCurve(merkleRootHex);
+  const n = secp256k1.CURVE.n;
+  const Y = G.multiply(x);
+  const gamma = H.multiply(x);
+  const output = crypto.createHash('sha256').update(gamma.toRawBytes(true)).digest('hex');
+
+  let c = 0n;
+  let s = 0n;
+  let U, V;
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const k = BigInt('0x' + crypto.randomBytes(32).toString('hex')) % n;
+    U = G.multiply(k);
+    V = H.multiply(k);
+    const challenge = crypto.createHash('sha256').update(Buffer.concat([
+      VRF_C_DOMAIN, G.toRawBytes(true), Y.toRawBytes(true),
+      H.toRawBytes(true), gamma.toRawBytes(true),
+      U.toRawBytes(true), V.toRawBytes(true),
+    ])).digest('hex');
+    c = BigInt('0x' + challenge) % n;
+    s = (k + c * x) % n;
+    if (s !== 0n) break;
+  }
+
+  return {
+    public_key: Buffer.from(Y.toRawBytes(true)).toString('base64'),
+    output,
+    proof: {
+      gamma: Buffer.from(gamma.toRawBytes(true)).toString('base64'),
+      c: c.toString(16),
+      s: s.toString(16),
+    },
+  };
+}
+
+function vrfVerify(publicKeyB64, merkleRootHex, outputHex, proof) {
+  try {
+    if (!proof || typeof proof !== 'object') return false;
+    const G = secp256k1.ProjectivePoint.BASE;
+    const n = secp256k1.CURVE.n;
+    const Y = secp256k1.ProjectivePoint.fromHex(Buffer.from(String(publicKeyB64), 'base64'));
+    if (Y.equals(secp256k1.ProjectivePoint.ZERO)) return false;
+    const H = vrfHashToCurve(merkleRootHex);
+    const gamma = secp256k1.ProjectivePoint.fromHex(Buffer.from(String(proof.gamma), 'base64'));
+    if (gamma.equals(secp256k1.ProjectivePoint.ZERO)) return false;
+
+    const outputCheck = crypto.createHash('sha256').update(gamma.toRawBytes(true)).digest('hex');
+    if (outputCheck !== stripHex(String(outputHex))) return false;
+
+    const c = BigInt.asUintN(256, BigInt('0x' + String(proof.c)));
+    const s = BigInt.asUintN(256, BigInt('0x' + String(proof.s)));
+    if (c >= n || s >= n) return false;
+
+    const U = G.multiply(s).subtract(Y.multiply(c));
+    const V = H.multiply(s).subtract(gamma.multiply(c));
+
+    const challenge = crypto.createHash('sha256').update(Buffer.concat([
+      VRF_C_DOMAIN, G.toRawBytes(true), Y.toRawBytes(true),
+      H.toRawBytes(true), gamma.toRawBytes(true),
+      U.toRawBytes(true), V.toRawBytes(true),
+    ])).digest('hex');
+    const cPrime = BigInt('0x' + challenge) % n;
+    return cPrime === c;
+  } catch { return false; }
+}
+
 function hashBlock(bloco) {
   let rewardsStr = '';
   if (Array.isArray(bloco.rewards)) {
@@ -497,6 +603,8 @@ function hashBlock(bloco) {
     miner: bloco.miner || '',
     nonce: String(bloco.nonce || '0'),
     parent_hash: bloco.parent_hash || '',
+    poh_hash: bloco.poh_hash || '',
+    poh_sequence_count: String(bloco.poh_sequence_count || 0),
     reward_cc: String(bloco.reward_cc || '0'),
     rewards: rewardsStr,
     target: String(bloco.target || '0'),
@@ -544,7 +652,11 @@ function computeStateRootAfterTxs(db, txs, rewards) {
     const to = tx.to_addr || '';
     const val = safeBigInt(tx.value, 0n);
     const fee = safeBigInt(tx.fee, 0n);
-    if (state[sender]) { state[sender].balance -= val + fee; state[sender].nonce += 1; }
+    if (state[sender]) {
+      if (state[sender].balance < val + fee) continue;
+      state[sender].balance -= val + fee;
+      state[sender].nonce += 1;
+    }
     if (to) { if (!state[to]) state[to] = { balance: 0n, nonce: 0 }; state[to].balance += val; }
   }
   if (rewards) {
@@ -681,5 +793,6 @@ module.exports = {
   computeStateRoot, computeStateRootAfterTxs, computeContractStateRoot, calculateMiningReward, isBetterChainCandidate,
   SCOOP_SIZE, SCOOPS_PER_NONCE, MINING_SCOOP_MODULUS, PLOT_FORMAT_V3, merkleTreeInternalNodeCount, plotScoopCount, plotScoopCountOrig,
   computeDeadline, deriveSampleIndexes, getChainWorkForBlock,
+  vrfHashToCurve, vrfDerivePlotSecret, vrfProve, vrfVerify,
   TIERS, EFFECTIVE_CAPACITY_CAP_GB, getTier, computeEffectiveCapacityGb, computeBaseTargetWithTier,
 };
