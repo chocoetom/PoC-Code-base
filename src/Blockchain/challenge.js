@@ -66,27 +66,25 @@ class ChallengeManager {
     const maxDl = chain.computeMaxDeadline();
     deadline = safeInt(deadline, -1);
     if (deadline < 0 || deadline > maxDl) return { ok: false, motivo: `invalid deadline (must be 0–${maxDl}s)` };
-    let sizeGb = 0;
     const plot = this.db.prepare('SELECT * FROM plot_commitments WHERE plot_id = ? AND miner = ?').get(plotId, miner);
-    if (plot) sizeGb = plot.size_gb;
-    else {
-      const peerPlot = this.db.prepare('SELECT * FROM peer_plot_commitments WHERE plot_id = ? AND miner = ?').get(plotId, miner);
-      sizeGb = peerPlot ? peerPlot.size_gb : 1;
-    }
+    const peerPlot = this.db.prepare('SELECT * FROM peer_plot_commitments WHERE plot_id = ? AND miner = ?').get(plotId, miner);
+    const commitment = plot || peerPlot;
+    const sizeGb = commitment ? (Number(commitment.size_gb) || 1) : 1;
+    const committedRoot = (commitment && commitment.merkle_root) || '';
     if (!proofPacket || !proofPacket.scoop_data) return { ok: false, motivo: 'proof_packet with scoop_data required for PoC verification' };
+    if (!committedRoot) return { ok: false, motivo: 'plot has no merkle_root commitment' };
     const genSig = ch.challenge_seed || ZERO_HASH;
     const networkBaseTarget = ch.base_target || chain._baseTargetForHeight(ch.block_height || chain.height);
     const computedDeadline = Math.min(computeDeadline(proofPacket.scoop_data, genSig, sizeGb, networkBaseTarget), maxDl);
     if (Math.abs(computedDeadline - deadline) > 1) return { ok: false, motivo: `PoC verification failed: computed ${computedDeadline}s, submitted ${deadline}s` };
     const expectedDigest = sha256hex(Buffer.concat([Buffer.from(proofPacket.scoop_data, 'hex'), Buffer.from(String(deadline))]));
     if (proofPacket.proof_digest && proofPacket.proof_digest !== expectedDigest) return { ok: false, motivo: 'proof digest mismatch' };
-    if (!plot || !plot.merkle_root) return { ok: false, motivo: 'plot has no merkle_root commitment' };
     const totalScoops = safeInt(proofPacket.total_scoops, 0) || plotScoopCount(sizeGb);
     const scoopIndex = safeInt(proofPacket.scoop_index, -1);
     if (scoopIndex < 0 || scoopIndex >= totalScoops) return { ok: false, motivo: `invalid scoop_index ${scoopIndex} for ${totalScoops} scoops` };
     const merkleProof = proofPacket.merkle_proof || [];
     const leafHash = Buffer.from(proofPacket.scoop_data, 'hex');
-    if (!verifyMerkleProofBuf(leafHash, scoopIndex, totalScoops, merkleProof, plot.merkle_root)) return { ok: false, motivo: 'Merkle proof does not match committed plot root' };
+    if (!verifyMerkleProofBuf(leafHash, scoopIndex, totalScoops, merkleProof, committedRoot)) return { ok: false, motivo: 'Merkle proof does not match committed plot root' };
 
     const proofSig = (proofPacket && proofPacket.proof_signature) || '';
     if (proofSig) {
