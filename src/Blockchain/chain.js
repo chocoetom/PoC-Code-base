@@ -311,7 +311,7 @@ class Chain {
     if (drift > 1) t += (t * BigInt(Math.round(movePct * 1000))) / 1000n;
     else if (drift < 1) t -= (t * BigInt(Math.round(movePct * 1000))) / 1000n;
     const minB = safeBigInt(this.cfg.baseTargetMin, 2n ** 32n);
-    const maxB = safeBigInt(this.cfg.baseTargetMax, 2n ** 48n);
+    const maxB = safeBigInt(this.cfg.baseTargetMax, 2n ** 42n);
     if (t < minB) t = minB;
     if (t > maxB) t = maxB;
     if (t < 1n) t = 1n;
