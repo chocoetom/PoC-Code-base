@@ -29,6 +29,7 @@ try {
     }
   }
 } catch (_) {
+  // optional
 }
 
 const webhookUrl = (config && config.discord_webhook_url) || process.env.discord_webhook_url || null;
@@ -87,6 +88,7 @@ function notifyNewBlock(block, cfg) {
     hour: 'numeric', minute: '2-digit', hour12: true,
   });
 
+  // Top contributors by reward share for this block.
   let topField = null;
   const rewards = Array.isArray(block.rewards) ? block.rewards.slice() : [];
   if (rewards.length > 0) {
@@ -123,6 +125,7 @@ function notifyNewBlock(block, cfg) {
   if (winnerDeadline) embed.fields.push({ name: 'Winning Deadline', value: winnerDeadline, inline: true });
   if (topField) embed.fields.push(topField);
 
+  // Enrich with live network stats from the node's own API before sending.
   fetchLocalStats(cfg, (err, st) => {
     if (!err && st) {
       if (st.capacity_gb != null) {
