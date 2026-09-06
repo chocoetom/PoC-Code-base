@@ -217,7 +217,7 @@ class ChallengeManager {
     if (!this.db || this.db.open === false) return;
     const now = Math.floor(Date.now() / 1000);
     const nextHeight = chain.height + 1;
-    const existingBlock = this.db.prepare('SELECT hash, challenge_id FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC LIMIT 1').get(nextHeight);
+    const existingBlock = this.db.prepare('SELECT hash, challenge_id FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC, poh_count DESC LIMIT 1').get(nextHeight);
 
     const stale = this.db.prepare(`SELECT challenge_id, block_height FROM mining_challenges
       WHERE forged_block_height IS NULL AND winner_deadline IS NOT NULL AND winner_miner IS NOT NULL

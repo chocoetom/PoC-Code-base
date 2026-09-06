@@ -13,11 +13,30 @@ class PohEngine {
     this._nextId = 0;
     this._verifyPool = [];
     this._started = false;
+    this._rebasing = false;
     this.offset = 0;
+    this._anchorHash = null;
   }
 
   setOffset(offset) {
     this.offset = Math.max(0, parseInt(offset, 10) || 0);
+  }
+
+  // Restart the continuous hash chain anchored at a specific PoH state (hash + absolute count).
+  // Lets a node that joined late or slept continue the network timeline from the accepted tip
+  // instead of lagging behind by millions of hashes while it catches up.
+  async rebase(hash, offset) {
+    this._rebasing = true;
+    try {
+      this.stop();
+    } catch {}
+    this._anchorHash = hash || poh.ZERO_HASH;
+    this.setOffset(offset);
+    try {
+      await this.start(this._anchorHash);
+    } finally {
+      this._rebasing = false;
+    }
   }
 
   _spawnWorker() {
@@ -56,6 +75,7 @@ class PohEngine {
 
   start(initialHash) {
     if (this._started) return Promise.resolve();
+    this._anchorHash = initialHash || poh.ZERO_HASH;
     this.worker = this._spawnWorker();
     this._started = true;
     return new Promise((resolve, reject) => {
@@ -68,9 +88,19 @@ class PohEngine {
   }
 
   async sample() {
-    if (!this.worker) return { poh_hash: poh.ZERO_HASH, poh_sequence_count: this.offset, poh_tick_count: 0 };
-    const s = await this._call('sample', {});
-    return { poh_hash: s.poh_hash, poh_sequence_count: s.poh_sequence_count + this.offset, poh_tick_count: s.poh_tick_count };
+    if (this._rebasing || !this.worker) {
+      // Mid-restart or not started yet: report the anchor state + absolute offset so callers
+      // (forge, rebase check) never get a hard failure while the worker is being re-spawned.
+      return { poh_hash: this._anchorHash || poh.ZERO_HASH, poh_sequence_count: this.offset, poh_tick_count: 0 };
+    }
+    try {
+      const s = await this._call('sample', {});
+      return { poh_hash: s.poh_hash, poh_sequence_count: s.poh_sequence_count + this.offset, poh_tick_count: s.poh_tick_count };
+    } catch (e) {
+      // The worker was recycled by a concurrent rebase after this call was posted.
+      // Return the current anchor state instead of propagating a spurious failure.
+      return { poh_hash: this._anchorHash || poh.ZERO_HASH, poh_sequence_count: this.offset, poh_tick_count: 0 };
+    }
   }
 
   async verify(initialHash, claimedFinalHash, numHashes) {

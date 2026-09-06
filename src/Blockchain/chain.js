@@ -59,11 +59,45 @@ class Chain {
     this.poh = require('../crypto-utils/poh');
   }
 
-
   async getPohSample() {
     if (!this.pohEngine) return { poh_hash: this.poh ? this.poh.ZERO_HASH : ZERO_HASH, poh_sequence_count: 0, poh_count: 0 };
     const s = await this.pohEngine.sample();
     return { poh_hash: s.poh_hash, poh_sequence_count: s.poh_sequence_count, poh_count: s.poh_sequence_count };
+  }
+
+  // Jump the local PoH engine forward to an accepted remote tip so its absolute counts stay
+  // on the network timeline. Without this, a node that starts late (or the network runs while a
+  // node is down) lags by the entire historical hash span and its local forges fail the
+  // O(1) count-continuity check forever.
+  _rebasePohEngineTo(bloco) {
+    if (!this.pohEngine) return;
+    const targetCount = safeInt(bloco && bloco.poh_count, 0);
+    if (targetCount <= 0) return;
+    if (this._pohRebaseInFlight) {
+      // Coalesce rapid sync bursts: only the newest tip matters, intermediate rebases are wasted.
+      this._pohRebaseTarget = bloco;
+      return;
+    }
+    this._pohRebaseInFlight = true;
+    this._pohRebaseRun(bloco).finally(() => {
+      this._pohRebaseInFlight = false;
+      const next = this._pohRebaseTarget;
+      this._pohRebaseTarget = null;
+      if (next) this._rebasePohEngineTo(next);
+    });
+  }
+
+  async _pohRebaseRun(bloco) {
+    try {
+      const targetCount = safeInt(bloco.poh_count, 0);
+      const s = await this.pohEngine.sample();
+      const currentCount = safeInt(s && s.poh_sequence_count, 0);
+      if (currentCount >= targetCount) return;
+      log('info', `[PoH] rebasing engine to block #${bloco.height} (poh_count ${targetCount}, engine ${currentCount})`);
+      await this.pohEngine.rebase(bloco.poh_hash || ZERO_HASH, targetCount);
+    } catch (e) {
+      log('warn', `[PoH] engine rebase failed: ${e.message}`);
+    }
   }
 
   async _verifyPohSegment(parent, bloco) {
@@ -127,7 +161,7 @@ class Chain {
   }
 
   _loadTip() {
-    const row = this.db.prepare('SELECT height, hash FROM blocks ORDER BY LENGTH(chain_work) DESC, chain_work DESC, hash ASC LIMIT 1').get();
+    const row = this.db.prepare('SELECT height, hash FROM blocks ORDER BY LENGTH(chain_work) DESC, chain_work DESC, poh_count DESC, hash ASC LIMIT 1').get();
     if (row) { this.height = row.height; this.bestHash = row.hash; }
   }
 
@@ -135,7 +169,7 @@ class Chain {
     if (safeInt(bloco.height, 0) <= 0) return { ok: true };
     const rewardsData = bloco.rewards || [];
     if (!Array.isArray(rewardsData)) return { ok: false, motivo: 'invalid reward distribution' };
-    const MAX_ENTRIES = 256;
+    const MAX_ENTRIES = 256; // max submitted proofs for block
     const totalReward = calculateMiningReward(bloco.height, this.cfg);
     let subKeys = null;
     if (bloco.challenge_id) {
@@ -207,7 +241,7 @@ class Chain {
   getBlock(heightOrHash) {
     let row;
     if (typeof heightOrHash === 'number' || /^\d+$/.test(String(heightOrHash))) {
-      row = this.db.prepare('SELECT * FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC, hash ASC LIMIT 1').get(Number(heightOrHash));
+      row = this.db.prepare('SELECT * FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC, poh_count DESC, hash ASC LIMIT 1').get(Number(heightOrHash));
     } else {
       row = this.db.prepare('SELECT * FROM blocks WHERE hash = ?').get(heightOrHash);
     }
@@ -231,6 +265,7 @@ class Chain {
       users: wallets, total_txs: totalTxs, mempool: mempoolCount,
       plots_count: plotsCount, capacity_gb: Number(capacityGb.toFixed(2)),
       chain_work: (tip && tip.chain_work) || '0',
+      poh_count: (tip && tip.poh_count) || 0,
       supply: String(supply), max_deadline: this.computeMaxDeadline(),
       base_target: (tip && tip.base_target) || String(BigInt(2) ** BigInt(64) / BigInt(5898240)),
     };
@@ -289,27 +324,54 @@ class Chain {
     return String(bt < 1n ? 1n : bt > MAX_BT ? MAX_BT : bt);
   }
 
+  _baseTargetCapacity() {
+    const blockTime = Math.max(1, this.cfg.expectedTimePerBlock || 60);
+    let candidates = 0n;
+    try {
+      const rows = this.db.prepare('SELECT DISTINCT plot_id, size_gb FROM plot_commitments').all();
+      for (const r of rows) {
+        const sizeGb = Math.max(0.001, parseFloat(r.size_gb) || 0.001);
+        const total = plotScoopCount(sizeGb);
+        candidates += BigInt(Math.max(1, Math.ceil(total / MINING_SCOOP_MODULUS)));
+      }
+    } catch {}
+    if (candidates < 1n) {
+      const fallbackSizeGb = Math.max(1, Number(this.cfg.initialPlotGb || 10));
+      const total = plotScoopCount(fallbackSizeGb);
+      candidates = BigInt(Math.max(1, Math.ceil(total / MINING_SCOOP_MODULUS)));
+    }
+    return (BigInt(2) ** BigInt(64)) / (candidates * BigInt(blockTime));
+  }
+
   _baseTargetForHeight(height) {
+    const MAX_BASE_TARGET = 2n ** 43n; // max possible base target, around 8.4k G, 1-5gb should be enough for mining.
+    const expectedTime = Math.max(1, this.cfg.expectedTimePerBlock || 60);
     if (height === 0) return String(this.cfg.genesisBaseTarget ?? this._defaultBaseTarget());
-    const expectedTime = this.cfg.expectedTimePerBlock || 60;
-    const windowSize = Math.min(256, this.cfg.difficultyAdjustBlocks || 64);
     const prev = this.db.prepare('SELECT base_target, timestamp FROM blocks WHERE height = ?').get(height - 1);
     if (!prev) return this._defaultBaseTarget();
     const prevTarget = BigInt((prev && prev.base_target) || this._defaultBaseTarget());
     if (height <= 16) return String(prevTarget);
+
+    const windowSize = Math.min(256, this.cfg.difficultyAdjustBlocks || 64);
     const window = Math.min(Math.max(8, Math.floor(height / 8)), windowSize);
     const oldest = this.db.prepare('SELECT timestamp FROM blocks WHERE height = ?').get(Math.max(0, height - window));
     if (!oldest) return String(prevTarget);
     const actualDuration = prev.timestamp - oldest.timestamp;
     if (actualDuration <= 0) return String(prevTarget);
 
-    let t = prevTarget;
-
     const meanSeconds = Math.max(1, actualDuration / window);
-    const drift = Math.min(2, Math.max(0.5, meanSeconds / Math.max(1, expectedTime)));
-    const movePct = Math.min(0.0625, Math.abs(drift - 1) * 0.125);
-    if (drift > 1) t += (t * BigInt(Math.round(movePct * 1000))) / 1000n;
-    else if (drift < 1) t -= (t * BigInt(Math.round(movePct * 1000))) / 1000n;
+    const maxMove = Math.min(0.30, Number(this.cfg.baseTargetMaxMove ?? 0.30));
+    const ratio = meanSeconds / Math.max(0.1, expectedTime);
+    let t;
+    if (ratio > 1) {
+      const gain = Math.min(maxMove, ratio - 1);
+      t = (prevTarget * BigInt(Math.round((1 + gain) * 1000))) / 1000n;
+    } else {
+      const loss = Math.min(maxMove, 1 - ratio);
+      t = (prevTarget * BigInt(Math.round((1 - loss) * 1000))) / 1000n;
+    }
+
+    // Minimum and Max base target Possible, this make sure the network will never be so hard, or so easy (normally it increases infinitely)
     const minB = safeBigInt(this.cfg.baseTargetMin, 2n ** 32n);
     const maxB = safeBigInt(this.cfg.baseTargetMax, 2n ** 42n);
     if (t < minB) t = minB;
@@ -355,7 +417,7 @@ class Chain {
       if (parent.height !== height - 1) return { ok: false, motivo: 'height sequence error' };
       if (safeInt(bloco.timestamp, -1) <= safeInt(parent.timestamp, -1)) return { ok: false, motivo: 'timestamp <= parent' };
       if (safeInt(bloco.timestamp, 0) > Date.now() / 1000 + this.cfg.maxFutureBlockSec) return { ok: false, motivo: 'timestamp too far in future' };
-      if (bloco.challenge_id && bloco.nonce) {
+      if (isLocalForge && bloco.challenge_id && bloco.nonce) {
         const ch = this.db.prepare('SELECT created_at, winner_deadline FROM mining_challenges WHERE challenge_id = ?').get(bloco.challenge_id);
         if (ch && ch.winner_deadline) {
           const earliestForge = (ch.created_at || 0) + ch.winner_deadline;
@@ -383,14 +445,14 @@ class Chain {
         }
       }
 
-      if (!isLocalForge || this.cfg.forceRemotePohVerify) {
+      if (this.cfg.forceRemotePohVerify) {
         const pohCheck = await this._verifyPohSegment(parent, bloco);
         if (!pohCheck.ok) {
           if (opts.skipPohValidation) log('warn', `[PoH] skipped segment validation at #${height}: ${pohCheck.motivo}`);
           else return { ok: false, motivo: pohCheck.motivo };
         }
       } else {
-        log('debug', `[PoH] skip pohVerify for local forge #${height} (segCount=${safeInt(bloco.poh_sequence_count, -1)})`);
+        log('debug', `[PoH] skip pohVerify for ${blockOrigin} block #${height} (segCount=${safeInt(bloco.poh_sequence_count, -1)}); enable with forceRemotePohVerify`);
       }
       if (!opts.skipPohValidation && bloco.poh_hash) {
         const parentCount = safeInt(parent.poh_count, 0);
@@ -467,15 +529,17 @@ class Chain {
     if (existingAtHeight && existingAtHeight.hash !== bloco.hash) {
       if (forceSync) {
         log('debug', `addBlock forceSync h=${height} local=${existingAtHeight.hash.slice(0, 10)} remote=${bloco.hash.slice(0, 10)}`);
-        const reorgResult = await this.reorganize(bloco, true);
-        if (!reorgResult.ok) return { ok: false, motivo: `sync reorg failed: ${reorgResult.motivo}` };
-        return { ok: true, motivo: 'sync reorg accepted', height: this.height, hash: this.bestHash };
-      }
-      const existingBlock = this.getBlockByHash(existingAtHeight.hash);
-      if (isBetterChainCandidate(bloco, existingBlock)) {
-        log('debug', `addBlock better candidate h=${height} local=${existingBlock.hash.slice(0, 10)} remote=${bloco.hash.slice(0, 10)}`);
+        const doomed = this.getBlockByHash(existingAtHeight.hash);
+        if (doomed && doomed.miner && doomed.miner !== 'genesis') this._rollbackRewardsForBlocks(doomed.miner, doomed.reward_cc);
+        if (doomed) this._rollbackPayoutsForBlock(doomed.hash);
+        this.db.prepare('DELETE FROM contract_logs WHERE block_hash = ?').run(existingAtHeight.hash);
+        this.db.prepare('DELETE FROM blocks WHERE hash = ?').run(existingAtHeight.hash);
+        log('debug', `addBlock forceSync: replaced incumbent ${existingAtHeight.hash.slice(0, 10)} at h=${height}`);
+      } else if (isBetterChainCandidate(bloco, this.getBlockByHash(existingAtHeight.hash))) {
+        log('debug', `addBlock better candidate h=${height} local=${existingAtHeight.hash.slice(0, 10)} remote=${bloco.hash.slice(0, 10)}`);
         const reorgResult = await this.reorganize(bloco);
         if (!reorgResult.ok) return { ok: false, motivo: `reorg failed: ${reorgResult.motivo}` };
+        if (!isLocalForge) this._rebasePohEngineTo(bloco);
         return { ok: true, motivo: 'reorganized to better tip', height: this.height, hash: this.bestHash };
       } else {
         return { ok: false, motivo: 'competing block not better than incumbent' };
@@ -625,6 +689,7 @@ class Chain {
       })();
       if (height > 0) log('info', `Block #${height} accepted [${bloco.hash.slice(0, 10)}] from ${blockOrigin} (miner: ${(bloco.miner || '').slice(0, 10)}…)`);
       this._maybeNotifyNewBlock(bloco, isLocalForge);
+      if (!isLocalForge && this.bestHash === bloco.hash) this._rebasePohEngineTo(bloco);
       return { ok: true, motivo: 'block added', height, hash: bloco.hash };
     } catch (e) {
       if (contractExec) { try { contractExec.rollback(); } catch {} }
@@ -1102,7 +1167,7 @@ class Chain {
       }
     };
     for (let h = fromHeight + 1; h <= maxH; h++) {
-      const bestParent = this.db.prepare('SELECT hash FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC, hash ASC LIMIT 1').get(h - 1);
+      const bestParent = this.db.prepare('SELECT hash FROM blocks WHERE height = ? ORDER BY LENGTH(chain_work) DESC, chain_work DESC, poh_count DESC, hash ASC LIMIT 1').get(h - 1);
       if (!bestParent) {
         const doomed = this.db.prepare('SELECT height, miner, reward_cc, hash FROM blocks WHERE height >= ?').all(h);
         doRollback(doomed);
@@ -1229,7 +1294,7 @@ this.db.prepare(`INSERT OR REPLACE INTO blocks (height, hash, parent_hash, times
   }
 
   _selectTip() {
-    const row = this.db.prepare('SELECT height, hash FROM blocks ORDER BY LENGTH(chain_work) DESC, chain_work DESC, hash ASC LIMIT 1').get();
+    const row = this.db.prepare('SELECT height, hash FROM blocks ORDER BY LENGTH(chain_work) DESC, chain_work DESC, poh_count DESC, hash ASC LIMIT 1').get();
     if (row) { this.height = row.height; this.bestHash = row.hash; }
   }
 

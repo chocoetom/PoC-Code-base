@@ -684,6 +684,10 @@ function isBetterChainCandidate(candidate, incumbent) {
   const h = (b) => safeInt((b || {}).height, 0);
   if (cw(candidate) !== cw(incumbent)) return cw(candidate) > cw(incumbent);
   if (h(candidate) !== h(incumbent)) return h(candidate) > h(incumbent);
+  const poh = (b) => safeBigInt((b || {}).poh_count, 0n);
+  const cp = poh(candidate);
+  const ip = poh(incumbent);
+  if (cp !== ip) return cp > ip;
   return String((candidate || {}).hash || '') < String((incumbent || {}).hash || '');
 }
 
@@ -752,7 +756,7 @@ function computeDeadline(scoopData, genSig, plotSizeGb, baseTargetOverride) {
   const qualityInt = quality.readBigUInt64BE(0);
   const baseTarget = baseTargetOverride ? BigInt(baseTargetOverride) : BigInt(computeBaseTargetWithTier(Math.max(0.001, parseFloat(plotSizeGb) || 0.001)));
   const dl = Number(qualityInt / baseTarget);
-  return Math.max(60, Math.min(dl, 86400));
+  return Math.max(1, Math.min(dl, 86400));
 }
 
 function deriveSampleIndexes(challengeSeed, totalScoops, sampleCount, round, plotId) {

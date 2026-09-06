@@ -98,7 +98,12 @@ class SyncEngine {
           const remoteWork = safeBigInt(remote.chain_work, 0n);
           const localTip = this.chain.getBlock(this.chain.height);
           const localWork = safeBigInt(localTip ? localTip.chain_work : 0n, 0n);
-          if (remoteWork <= localWork && remoteHeight <= this.chain.height) continue;
+          const equalWorkFork = remoteWork === localWork && remoteHeight === this.chain.height && localTip && remote.hash && remote.hash !== localTip.hash;
+          const remoteBetter = remoteWork > localWork || (equalWorkFork && isBetterChainCandidate(
+            { chain_work: remote.chain_work, height: remoteHeight, hash: remote.hash, poh_count: safeBigInt(remote.poh_count, 0n) },
+            localTip
+          ));
+          if (!remoteBetter) continue;
           log('debug', `loopSync: peer=${peer.url} remoteHeight=${remoteHeight} remoteWork=${remote.chain_work} localHeight=${this.chain.height} localWork=${localTip ? localTip.chain_work : 0}`);
           const synced = await this._syncFromPeer(peer.url, remoteHeight);
           // Only stop after a peer that actually advanced the chain; otherwise keep

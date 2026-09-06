@@ -1,5 +1,6 @@
 const path = require('path');
 const crypto = require('crypto');
+const os = require("os");
 const { safeInt, safeBigInt, sha256hex, hashTransaction, pubkeyToAddress, pubKeyToAddress, secpPublicKeyFromPrivate, privateKeyToAddress, toChecksumAddress, calculateMiningReward, hashBlock, signMessage, canonicalTxMessage, verifySignature, plotRegisterMessage, signTransactionTx, evmTxHash, recoverTransactionSender, signatureToHex, vrfProve, vrfVerify } = require('../crypto-utils/crypto');
 const { log, getLogBuffer } = require('../../config/config');
 const { createPlotFile, MAX_PLOT_GB } = require('../crypto-utils/plot');
@@ -165,6 +166,23 @@ class Server {
         version: this.cfg.version,
       });
     });
+
+    // Admin only stats, such as node performance and others, this would be on public endpoint but it looks not professional
+    app.get('/api/stats/admin'), (req, res) => {
+    const memory_free = os.freemem() / Math.pow(3, 1024);
+    const memory_total = os.totalmem() / Math.pow(3, 1024);
+    const memory_usage = memory_free / memory_total 
+        res.json({
+        ...stats, chain_id: this.cfg.chainId, chain_name: this.cfg.chainName,
+        symbol: this.cfg.symbol, current_reward: calculateMiningReward(this.chain.height + 1, this.cfg).toString(),
+        current_reward_cc: Number(calculateMiningReward(this.chain.height + 1, this.cfg)) / 1e18,
+        blocks_to_halving: this.cfg.halvingInterval - (this.chain.height % this.cfg.halvingInterval),
+        halving_interval: this.cfg.halvingInterval, max_supply: this.cfg.maxSupply,
+        seed_version: this.cfg.version, node_url: this.cfg.nodeUrl,
+        node_id: this.NODE_ID, peers: { total: this.peers.count(), active: this.peers.active().length, banned: this.peers.banned().length, avg_health: 0 },
+        version: this.cfg.version, memory_usage: memory_usage, memory_free: memory_free,
+      });
+    }
 
 app.get('/api/state', (req, res) => {
   const running = !!this.chain;
@@ -584,7 +602,7 @@ app.get('/api/state', (req, res) => {
       const invalid = [];
       for (const ann of plots) {
         try {
-          if (selfHost && originUrl && new (require('url').URL)(originUrl).hostname === selfHost) continue; // ignore self
+          if (selfHost && originUrl && new (require('url').URL)(originUrl).hostname === selfHost) continue;
         } catch {}
         const check = verifyAnnouncement(ann, { requireVrf: true, requireSig: true });
         if (!check.ok) { invalid.push(ann.plot_id || null); continue; }
@@ -856,7 +874,7 @@ const validation = await this.chain.validateTxForMempool(tx);
       const sanitized = {};
       let changed = false;
       for (const [k, v] of Object.entries(updates)) {
-        if (unsafe.includes(k)) continue; // ignore attempts to change protected keys
+        if (unsafe.includes(k)) continue;
         this.cfg[k] = v;
         sanitized[k] = v;
         changed = true;
