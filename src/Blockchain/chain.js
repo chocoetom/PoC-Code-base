@@ -157,10 +157,6 @@ class Chain {
     if (deadline < 0) return { ok: false, motivo: 'reward entry has invalid deadline' };
     const wp = bloco.winner_proof && typeof bloco.winner_proof === 'object' ? bloco.winner_proof : null;
     if (wp) {
-      // A recompensa tem de corresponder à prova vencedora QUE O BLOCO TRAZ
-      // (assinatura, scoop, merkle e deadline já verificados acima) — não às
-      // submissões que este node observou: o mesmo miner pode submeter plots
-      // diferentes a nodes diferentes, e cada node só vê parte das provas.
       if (normalizeAddr(wp.miner || '') !== miner) return { ok: false, motivo: 'reward miner does not match winner_proof miner' };
       if (String(wp.plot_id || '') !== plot) return { ok: false, motivo: 'reward plot does not match winner_proof plot' };
       if (safeInt(wp.deadline, -1) !== deadline) return { ok: false, motivo: 'reward deadline does not match winner_proof deadline' };
@@ -361,26 +357,12 @@ class Chain {
         if (wpDeadline < 0) {
           return { ok: false, motivo: 'winner_proof has no deadline' };
         }
-        // O timestamp tem de respeitar o deadline ALEGADO na prova (recomputado
-        // criptograficamente mais abaixo), medido a partir do timestamp do
-        // PARENT — o único relógio em que todos os nodes concordam. O
-        // challenge.created_at é a hora local a que ESTE node viu a ponta
-        // (sempre posterior para quem sincroniza atrasado) e usá-lo aqui
-        // rejeitava blocos válidos. O mesmo miner pode ainda submeter plots
-        // diferentes a nodes diferentes; a legitimidade vem da assinatura,
-        // do scoop alvo, da merkle proof e do deadline recomputado.
         if (safeInt(bloco.timestamp, 0) < safeInt(parent.timestamp, 0) + wpDeadline) return { ok: false, motivo: 'block timestamp precedes winning deadline' };
         if (!wp.proof_signature) {
           return { ok: false, motivo: 'winner_proof not signed' };
         }
         const wpPkRow = this.db.prepare('SELECT public_key_secp256k1 FROM user_keys WHERE lower(address) = lower(?)').get(wpMiner)
           || this.db.prepare('SELECT public_key_secp256k1 FROM users WHERE lower(address) = lower(?)').get(wpMiner);
-        // A chave que assinou a prova PoC é do VENCEDOR, que nem sempre é o forger.
-        // bloco.miner_public_key é a chave de quem forjou o bloco, não de quem
-        // ganhou o desafio, logo NAO serve como fallback aqui. A chave tem de vir
-        // do winner_proof (blocos novos) ou de uma registry conhecida — incluindo
-        // peer_plot_commitments, que é como um node que sincroniza aprende a chave
-        // de miners que nunca registaram nada localmente.
         const peerPkRow = this.db.prepare('SELECT public_key FROM peer_plot_commitments WHERE lower(miner) = lower(?) AND public_key IS NOT NULL AND public_key != \'\' ORDER BY created_at DESC LIMIT 1').get(wpMiner);
         const wpCandidates = [
           String(wp.public_key || ''),
@@ -422,15 +404,7 @@ class Chain {
             return { ok: false, motivo: 'winner_proof merkle_root does not match committed plot root' };
           }
         } else {
-          // Sem commitment prévio conhecido: validar a prova de forma autónoma.
-          // Um node NÃO precisa de conhecer todos os plots da chain (Burst/Chia:
-          // a prova PoC é auto-suficiente; nada entra na chain até se ganhar).
-          // A vinculação à capacidade alegada vem da estrutura da prova: o nº
-          // exato de elementos varia com (scoop_index, total_scoops), por isso
-          // um root inventado com total_scoops falso não fecha a conta. Todo o
-          // resto (assinatura do vencedor, scoop alvo, merkle proof, challenge
-          // binding e deadline recomputado abaixo) corre igual nos dois caminhos.
-          log('debug', `addBlock #${height}: plot ${wpPlotId.slice(0, 12)}… sem commitment local, validação autónoma`);
+          log('debug', `addBlock #${height}: plot ${wpPlotId.slice(0, 12)}… no local committement, running local validation`);
           const needProofLen = expectedMerkleProofLen(scoopIndex, totalScoops);
           if (merkleProof.length !== needProofLen) {
             return { ok: false, motivo: `winner_proof merkle proof length ${merkleProof.length} inconsistent with scoop_index ${scoopIndex} for ${totalScoops} scoops (expected ${needProofLen})` };
@@ -464,8 +438,6 @@ class Chain {
             }
           }
         }
-        // Always recompute the deadline against the authoritative challenge base target,
-        // never the miner-supplied one (a 2x larger bt halves the deadline).
         const recomputed = computeDeadline(scoopData, genSig, /^\d+$/.test(challengeBt) && BigInt(challengeBt) > 0n ? challengeBt : String(wpBaseTarget));
         if (recomputed !== wpDeadline) {
           return { ok: false, motivo: `PoC verification failed: computed deadline ${recomputed}s, claimed ${wpDeadline}s` };
